@@ -21,7 +21,7 @@
   },
   "cwmp": {
     "parameter_key": "acs-test-key",
-    "log_soap": true
+    "log_soap": false
   },
   "logging": {
     "level": "INFO"

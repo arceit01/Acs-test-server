@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import cmd
+import re
 import shlex
 import threading
 import time
@@ -108,6 +109,33 @@ HELP = {
         "notes": "Restores the CPE to factory defaults - use with care. "
                  "Alias: fr.",
     },
+    "fw": {
+        "summary": "Queue a firmware upgrade Download RPC",
+        "usage": ["fw download <url> [--username U] [--password P]",
+                  "             [--filesize N] [--targetfile NAME] [--delay N]",
+                  "             [--cmdkey KEY]"],
+        "args": [
+            ("url", "Firmware image location (http://, https:// or ftp://)"),
+            ("--username/--password", "Credentials the CPE uses to fetch the file"),
+            ("--filesize", "Expected size in bytes (0 = unknown)"),
+            ("--targetfile", "Filename the CPE should save as"),
+            ("--delay", "Seconds the CPE waits before starting the download"),
+            ("--cmdkey", "CommandKey echoed in TransferComplete "
+                         "(auto-generated when omitted)"),
+        ],
+        "examples": [
+            "fw download http://192.168.1.10:8000/fw_v2.img",
+            "fw download http://srv/firmware_v3 --username admin "
+            "--password secret --filesize 10485760",
+        ],
+        "notes": "Uses FileType '1 Firmware Upgrade Image'. The file name/"
+                 "extension is not validated - any URL path works (.img, "
+                 ".rbi, no extension, ...). Most CPEs reply Status=1 (async) "
+                 "and later start a new session with event '7 TRANSFER "
+                 "COMPLETE' reporting success/failure; many then reboot into "
+                 "the new firmware ('1 BOOT'). Use 'cr' to trigger the "
+                 "session that delivers the request.",
+    },
     "cr": {
         "summary": "Send an HTTP Connection Request to the CPE",
         "usage": ["cr [<idx|serial>]"],
@@ -131,9 +159,11 @@ HELP = {
         "usage": ["log"],
         "args": [],
         "examples": ["log"],
-        "notes": "When ON, every SOAP envelope sent or received is printed "
-                 "(truncated to 2000 chars). Useful for debugging type or "
-                 "namespace issues.",
+        "notes": "Toggles printing of raw SOAP envelopes (default OFF; also "
+                 "set [cwmp].log_soap in config.json). Concise summaries - "
+                 "including parameter values - are always shown regardless. "
+                 "Turn ON to debug type or namespace issues; envelopes are "
+                 "truncated to 2000 chars.",
     },
     "status": {
         "summary": "Show server status",
@@ -160,6 +190,9 @@ HELP = {
 }
 
 ALIASES = {"fr": "factoryreset", "exit": "quit", "q": "quit"}
+
+FW_OPTIONS = ("--username", "--password", "--filesize",
+              "--targetfile", "--delay", "--cmdkey")
 
 
 def _canonical(name: str) -> str:
@@ -299,6 +332,16 @@ class ConsoleUI(cmd.Cmd):
             if "=" in text:
                 return []
             return self._path_matches(text)
+        if cmd_name == "fw":
+            # cur_idx: which token the cursor is on (0 = 'fw', 1 =
+            # subcommand, >=2 = url/options). A trailing space means a new
+            # empty token has started.
+            cur_idx = len(tokens) if line.endswith(" ") else len(tokens) - 1
+            if cur_idx == 1:
+                return ["download"] if "download".startswith(text) else []
+            if text.startswith("--"):
+                return [o for o in FW_OPTIONS if o.startswith(text)]
+            return []
         return []
 
     def _path_matches(self, text: str) -> list[str]:
@@ -519,6 +562,56 @@ class ConsoleUI(cmd.Cmd):
         self._hint(sess)
 
     do_fr = do_factoryreset
+
+    def do_fw(self, arg):
+        """fw download <url> [options] : queue a firmware upgrade Download RPC"""
+        tokens = shlex.split(arg)
+        if not tokens or tokens[0].lower() != "download":
+            return self._usage('fw download <url> [--username U] [--password P] '
+                               '[--filesize N] [--targetfile NAME] [--delay N] '
+                               '[--cmdkey KEY]')
+        args = tokens[1:]
+        if not args:
+            return self._usage("fw download <url> [...options]")
+        url = args[0]
+        if not re.match(r"^(https?|ftp)://", url.lower()):
+            return self._usage(f"...invalid URL '{url}' "
+                               "(http://, https:// or ftp:// expected)")
+        opts = {"username": "", "password": "", "filesize": "0",
+                "targetfile": "", "delay": "0", "cmdkey": ""}
+        valid = FW_OPTIONS
+        it = iter(args[1:])
+        for tok in it:
+            if tok.lower() not in valid:
+                return self._usage(f"...unknown option '{tok}' "
+                                   f"(valid: {' '.join(valid)})")
+            try:
+                opts[tok.lower()[2:]] = next(it)
+            except StopIteration:
+                return self._usage(f"...missing value for '{tok}'")
+        try:
+            file_size = int(opts["filesize"])
+            delay = int(opts["delay"])
+        except ValueError:
+            return self._usage("--filesize/--delay must be integers")
+        sess = self._need_session()
+        if not sess:
+            return
+        command_key = opts["cmdkey"] or f"fw-{time.strftime('%Y%m%d%H%M%S')}"
+        rpc_args = {
+            "command_key": command_key,
+            "file_type": "1 Firmware Upgrade Image",
+            "url": url,
+            "username": opts["username"],
+            "password": opts["password"],
+            "file_size": file_size,
+            "target_filename": opts["targetfile"],
+            "delay_seconds": delay,
+        }
+        summary = f"url={url} key={command_key}"
+        self.registry.enqueue(sess.serial, OutboundRPC("Download", rpc_args, summary))
+        self.printer.print(f"Queued firmware Download for {sess.serial}: {summary}")
+        self._hint(sess)
 
     def do_cr(self, arg):
         """cr [idx|serial] : send an HTTP Connection Request to the CPE"""

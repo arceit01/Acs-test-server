@@ -3,6 +3,30 @@
 All notable changes to the TR-069 ACS test tool are documented here.
 Bump `VERSION` in `version.py` and add an entry below for each release.
 
+## [1.3] - 2026-08-21
+
+### Changed
+- 原始 SOAP 封包顯示改為**預設關閉**（`cwmp.log_soap` 預設 false）：
+  console 只顯示簡潔摘要（參數值等照常）；需要看封包時用 `log` 指令
+  即時切換或改 config。既有 config.json 已寫入 `log_soap: true` 者不受影響
+
+### Added
+- `fw` 指令 Tab 補齊：子命令（`fw <Tab>` → `download`）與選項
+  （`--<Tab>`）；選項清單抽成 `FW_OPTIONS` 常數與 `do_fw` 共用
+
+### Docs
+- 釐清韌體檔名/副檔名不經驗證（`.img`、無副檔名皆可），範例改為混合型態
+
+## [1.2] - 2026-08-21
+
+### Added
+- 韌體升級功能：`fw download <url> [選項]` 排程 TR-069 Download RPC
+  （FileType "1 Firmware Upgrade Image"，支援 --username/--password/
+  --filesize/--targetfile/--delay/--cmdkey）
+- DownloadResponse 專屬顯示（Status 0=已完成 / 1=進行中、StartTime/CompleteTime）
+- mock CPE 支援完整非同步下載流程：背景實際下載 → 新 session（event
+  "7 TRANSFER COMPLETE"）送 TransferComplete → 模擬升級後重開機（1 BOOT）
+
 ## [1.1] - 2026-08-21
 
 ### Added

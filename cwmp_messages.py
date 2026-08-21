@@ -147,6 +147,28 @@ def reboot(msg_id, command_key: str = "") -> str:
     return envelope(msg_id, body)
 
 
+def download(msg_id, command_key: str = "",
+             file_type: str = "1 Firmware Upgrade Image",
+             url: str = "", username: str = "", password: str = "",
+             file_size: int = 0, target_filename: str = "",
+             delay_seconds: int = 0) -> str:
+    body = (
+        "<cwmp:Download>"
+        f"<CommandKey>{xml_escape(command_key)}</CommandKey>"
+        f"<FileType>{xml_escape(file_type)}</FileType>"
+        f"<URL>{xml_escape(url)}</URL>"
+        f"<Username>{xml_escape(username)}</Username>"
+        f"<Password>{xml_escape(password)}</Password>"
+        f"<FileSize>{int(file_size)}</FileSize>"
+        f"<TargetFileName>{xml_escape(target_filename)}</TargetFileName>"
+        f"<DelaySeconds>{int(delay_seconds)}</DelaySeconds>"
+        "<SuccessURL></SuccessURL>"
+        "<FailureURL></FailureURL>"
+        "</cwmp:Download>"
+    )
+    return envelope(msg_id, body)
+
+
 def factory_reset(msg_id) -> str:
     return envelope(msg_id, "<cwmp:FactoryReset/>")
 
@@ -365,6 +387,16 @@ def format_response(method: str, elem: ET.Element | None) -> str:
                 writable = child_text(struct, "Writable")
                 lines.append(f"{name} (writable={writable})")
             return "\n".join(lines) or "(no parameters)"
+    if localname(elem.tag) == "DownloadResponse":
+        status = child_text(elem, "Status")
+        meaning = {"0": "download completed",
+                   "1": "in progress (TransferComplete will follow)"}.get(status, "")
+        lines = [f"Status={status}" + (f" ({meaning})" if meaning else "")]
+        for field in ("StartTime", "CompleteTime"):
+            value = child_text(elem, field)
+            if value:
+                lines.append(f"{field}={value}")
+        return "\n".join(lines)
     status = child_text(elem, "Status")
     if status:
         return f"Status={status}"

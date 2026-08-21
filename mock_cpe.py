@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import secrets
@@ -131,13 +132,25 @@ class MockCPE:
         )
         return cwmp.envelope(cwmp.next_msg_id(), body)
 
-    def run_session(self, event_code: str = "1 BOOT"):
-        if not self._session_lock.acquire(blocking=False):
-            print("[cpe] session already in progress - skipping", flush=True)
-            return
+    def run_session(self, event_code: str = "1 BOOT",
+                    first_request: str | None = None,
+                    wait_lock: bool = False):
+        """Run one CWMP session.
+
+        first_request: optional SOAP request (e.g. TransferComplete) sent as
+        the first poll POST right after the Inform exchange.
+        wait_lock: wait for a busy session to finish instead of skipping.
+        """
+        deadline = time.time() + (15.0 if wait_lock else 0.0)
+        while not self._session_lock.acquire(blocking=False):
+            if time.time() >= deadline:
+                print("[cpe] session already in progress - skipping", flush=True)
+                return
+            time.sleep(0.3)
         try:
             print(f"[cpe] starting session (event {event_code})", flush=True)
             response = self.post_soap(self._build_inform(event_code))
+            pending = first_request
             for _ in range(20):
                 if not response or not response.strip():
                     print("[cpe] ACS returned empty response - session complete",
@@ -148,9 +161,11 @@ class MockCPE:
                     print("[cpe] no method in ACS response - ending session", flush=True)
                     return
                 if parsed["fault"] or parsed["method"].endswith("Response"):
-                    # ACS acknowledged our previous request: poll for the
-                    # next ACS request with an empty POST (per TR-069).
-                    response = self.post_soap(None)
+                    # ACS acknowledged our previous request: send the queued
+                    # request (e.g. TransferComplete), otherwise poll with an
+                    # empty POST (per TR-069).
+                    response = self.post_soap(pending)
+                    pending = None
                     continue
                 response = self.post_soap(self._handle_acs_request(parsed))
             print("[cpe] too many round trips - aborting session", flush=True)
@@ -200,6 +215,24 @@ class MockCPE:
                 "<cwmp:SetParameterValuesResponse><Status>0</Status>"
                 "</cwmp:SetParameterValuesResponse>")
 
+        if method == "Download":
+            url = cwmp.child_text(elem, "URL")
+            file_type = cwmp.child_text(elem, "FileType")
+            key = cwmp.child_text(elem, "CommandKey")
+            username = cwmp.child_text(elem, "Username")
+            password = cwmp.child_text(elem, "Password")
+            print(f"[cpe] *** DOWNLOAD requested: type='{file_type}' "
+                  f"url={url} key={key}", flush=True)
+            threading.Thread(target=self._do_download,
+                             kwargs={"url": url, "key": key,
+                                     "username": username,
+                                     "password": password},
+                             daemon=True).start()
+            return cwmp.envelope(
+                mid,
+                "<cwmp:DownloadResponse><Status>1</Status>"
+                "</cwmp:DownloadResponse>")
+
         if method == "GetParameterNames":
             path = cwmp.child_text(elem, "ParameterPath")
             next_level = cwmp.child_text(elem, "NextLevel").lower() == "true"
@@ -237,6 +270,51 @@ class MockCPE:
                 "SetParameterValues", "Reboot", "FactoryReset"])
 
         return cwmp.soap_fault(mid, "Client", f"Unsupported method {method}", 8000)
+
+    def _build_transfer_complete(self, key: str, fault_code: int,
+                                 fault_string: str, start: str,
+                                 complete: str) -> str:
+        body = (
+            "<cwmp:TransferComplete>"
+            f"<CommandKey>{cwmp.xml_escape(key)}</CommandKey>"
+            "<FaultStruct>"
+            f"<FaultCode>{fault_code}</FaultCode>"
+            f"<FaultString>{cwmp.xml_escape(fault_string)}</FaultString>"
+            "</FaultStruct>"
+            f"<StartTime>{cwmp.xml_escape(start)}</StartTime>"
+            f"<CompleteTime>{cwmp.xml_escape(complete)}</CompleteTime>"
+            "</cwmp:TransferComplete>"
+        )
+        return cwmp.envelope(cwmp.next_msg_id(), body)
+
+    def _do_download(self, url: str, key: str, username: str = "",
+                     password: str = ""):
+        """Fetch the firmware image in the background, then report via a
+        '7 TRANSFER COMPLETE' session, followed by an upgrade reboot."""
+        start = time.strftime("%Y-%m-%dT%H:%M:%S")
+        ok, detail = True, ""
+        try:
+            req = urllib.request.Request(url)
+            if username:
+                token = base64.b64encode(
+                    f"{username}:{password}".encode()).decode()
+                req.add_header("Authorization", f"Basic {token}")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+            print(f"[cpe] downloaded {len(data)} bytes from {url}", flush=True)
+        except Exception as exc:
+            ok, detail = False, str(exc)
+            print(f"[cpe] download failed: {exc}", flush=True)
+        complete = time.strftime("%Y-%m-%dT%H:%M:%S")
+        time.sleep(0.5)  # simulate image validation/installation
+        if ok:
+            print("[cpe] *** FIRMWARE UPGRADE APPLIED - REBOOTING INTO NEW FW ***",
+                  flush=True)
+        tc = self._build_transfer_complete(key, 0 if ok else 9002, detail,
+                                           start, complete)
+        self.run_session("7 TRANSFER COMPLETE", first_request=tc, wait_lock=True)
+        if ok:
+            threading.Timer(2.0, lambda: self.run_session("1 BOOT")).start()
 
 
 class CRHandler(BaseHTTPRequestHandler):

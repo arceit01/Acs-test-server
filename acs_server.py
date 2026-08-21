@@ -33,7 +33,7 @@ DEFAULT_CONFIG = {
         "auth": {"enabled": False, "username": "acsuser", "password": "acspass"},
     },
     "connection_request": {"username": "", "password": "", "timeout": 10},
-    "cwmp": {"parameter_key": "acs-test-key", "log_soap": True},
+    "cwmp": {"parameter_key": "acs-test-key", "log_soap": False},
     "logging": {"level": "INFO"},
 }
 
@@ -81,6 +81,18 @@ def build_rpc_xml(rpc, default_parameter_key: str) -> str | None:
         return cwmp.get_parameter_names(mid, args["path"], args.get("next_level", False))
     if method == "Reboot":
         return cwmp.reboot(mid, args.get("command_key", ""))
+    if method == "Download":
+        return cwmp.download(
+            mid,
+            command_key=args.get("command_key", ""),
+            file_type=args.get("file_type", "1 Firmware Upgrade Image"),
+            url=args.get("url", ""),
+            username=args.get("username", ""),
+            password=args.get("password", ""),
+            file_size=args.get("file_size", 0),
+            target_filename=args.get("target_filename", ""),
+            delay_seconds=args.get("delay_seconds", 0),
+        )
     if method == "FactoryReset":
         return cwmp.factory_reset(mid)
     return None

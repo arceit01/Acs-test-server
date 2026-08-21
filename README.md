@@ -1,4 +1,4 @@
-# TR-069 ACS 測試工具 v1.1
+# TR-069 ACS 測試工具 v1.3
 
 以 Python 標準函式庫實作的 TR-069/CWMP Auto Configuration Server（ACS）測試伺服器。
 可讓 CPE（client）連線，並透過互動式 console 對 CPE 下發 Get / Set 參數等 RPC 指令。
@@ -59,9 +59,10 @@ CPE 主動 Inform 或由 `cr` 觸發皆可。回應與 Fault 會即時顯示在 
 | `names <路徑> [nextlevel]` | 排程 GetParameterNames |
 | `reboot [command_key]` | 排程 Reboot |
 | `factoryreset`（`fr`） | 排程 FactoryReset |
+| `fw download <url> [選項]` | 排程韌體升級 Download RPC（見「韌體升級測試」） |
 | `cr [目標]` | 送出 Connection Request（HTTP GET + Digest Auth）給 CPE |
 | `hist [目標]` | 顯示該 CPE 的訊息收發歷史 |
-| `log` | 開/關原始 SOAP 封包記錄 |
+| `log` | 開/關原始 SOAP 封包記錄（預設關閉；摘要通知不受影響） |
 | `status` | 伺服器狀態 |
 | `sleep <秒>` | 暫停（供腳本化測試） |
 | `quit` / `exit` / `q` | 結束 |
@@ -92,7 +93,8 @@ CPE 主動 Inform 或由 `cr` 觸發皆可。回應與 Fault 會即時顯示在 
   },
   "cwmp": {
     "parameter_key": "acs-test-key",  // SetParameterValues 附帶的 ParameterKey
-    "log_soap": true                  // 在 console 顯示原始 SOAP
+    "log_soap": false                 // 顯示原始 SOAP 封包（預設關閉；
+                                      // console 用 log 指令即時切換）
   },
   "logging": { "level": "INFO" }
 }
@@ -145,6 +147,34 @@ python3 mock_cpe.py --url http://127.0.0.1:7547/acs --serial MOCK001 \
 | `mock_cpe.py` | 模擬 CPE（測試用） |
 | `config.json` | 設定檔 |
 
+## 韌體升級測試（fw）
+
+```
+acs[MOCK001]> fw download http://192.168.1.10:8000/fw_v2.img
+acs[MOCK001]> fw download http://srv/firmware_v3 --username admin --password secret \
+                  --filesize 10485760 --cmdkey fw-upgrade-1
+acs[MOCK001]> cr        # 觸發 session 送出 Download
+```
+
+- FileType 固定為 `1 Firmware Upgrade Image`；選項：`--username/--password`
+  （CPE 抓檔帳密）、`--filesize`（預期大小）、`--targetfile`、`--delay`、
+  `--cmdkey`（未指定自動產生）
+- **檔名與副檔名不經驗證**：任何 URL 路徑皆可（`.img`、`.rbi`、無副檔名…）。
+  TR-069 只傳遞 URL，CPE 只看檔案內容
+- 標準非同步流程：CPE 回 `DownloadResponse Status=1`（下載中）→ 完成後開新
+  session（event `7 TRANSFER COMPLETE`）送 TransferComplete 回報成功/失敗
+  → 多數設備接著重開機進新韌體（event `1 BOOT`）
+- console 會顯示 DownloadResponse 狀態與 TransferComplete 的 FaultCode（0=成功）
+
+用 mock CPE + 本地 HTTP server 即可完整驗證：
+
+```bash
+mkdir /tmp/fw && dd if=/dev/urandom of=/tmp/fw/fw_v2.img bs=1M count=1
+cd /tmp/fw && python3 -m http.server 8000 &
+python3 mock_cpe.py --url http://127.0.0.1:7547/acs --serial MOCK001 ...
+# console: select 1 -> fw download http://127.0.0.1:8000/fw_v2.img -> cr
+```
+
 ## 參數路徑 Tab 自動補齊
 
 在 `get` / `set` / `names` 後輸入部分路徑按 Tab 即可補齊（需 readline，
@@ -161,6 +191,9 @@ Linux/macOS 原生支援）：
   ```
 - 頂層（未輸入 `.` 前）支援子字串比對：`Devic` 可補成 `InternetGatewayDevice.`
 - `set` 在輸入 `=` 之前補路徑；`select` / `info` / `hist` / `cr` 補齊序號
+- `fw` 補齊子命令（`fw <Tab>` → `download`）與選項（`--<Tab>` 列出
+  `--username/--password/--filesize/--targetfile/--delay/--cmdkey`）；
+  URL 為任意輸入不補
 
 ## 參數型別處理（set）
 
