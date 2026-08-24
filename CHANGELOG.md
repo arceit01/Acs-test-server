@@ -3,7 +3,31 @@
 All notable changes to the TR-069 ACS test tool are documented here.
 Bump `VERSION` in `version.py` and add an entry below for each release.
 
+## [1.5] - 2026-08-24
+
+### Added
+- `addobj` / `delobj` 指令：支援 TR-069 AddObject/DeleteObject 物件實例管理
+  - `addobj <object_path>`：建立多實例物件新實例（路徑需以 `.` 結尾）
+  - `delobj <object_path>`：刪除指定物件實例（需包含 instance number，以 `.` 結尾）
+  - Tab 自動補齊支援物件路徑（需先執行 `names <parent>. true` 學習）
+- `open <filepath>` 指令：從檔案批次載入 SetParameterValues 參數
+  - 簡單文字格式：每行 `path=value[:type]`（與 `set` 指令語法相同）
+  - 解析錯誤時整批取消；每參數產生獨立 SetParameterValues RPC
+- `clear [<idx|serial>]` 指令：清除指定 CPE 的待發送 RPC 佇列
+- `show [<idx|serial>]` 指令：顯示指定 CPE 的所有待發送 RPC 佇列內容
+  - 顯示方法、摘要與排隊順序
+
+### Changed
+- `SUPPORTED_RPC_METHODS` 新增 AddObject、DeleteObject
+
 ## [1.4] - 2026-08-24
+
+### Fixed
+- 相容非標準 EventCode：部分韌體（實測 Arcadyan PRV650AB）將整串
+  `0 BOOTSTRAP` 寫在 `<EventCode>` 內，導致 bootstrap 自動佈建的
+  `code == "0"` 比對失敗、功能從未觸發。parse_inform 現以第一個空白切分
+  出純事件代碼（剩餘部分作為 command key），console 顯示維持
+  `0 BOOTSTRAP` 不變
 
 ### Added
 - Bootstrap 自動佈建 Connection Request 帳密（`cwmp.auto_provision_cr`，
@@ -12,7 +36,8 @@ Bump `VERSION` in `version.py` and add an entry below for each release.
   模型（Device.* / InternetGatewayDevice.*）下發 SetParameterValues；
   CPE 確認後帳密記錄至該 CPE session 並寫回 config.json `[connection_request]`。
   `cr` 帳密解析順序改為：該 CPE 佈建帳密 > config 全域；佈建失敗不動 config
-- `info` 新增 CR auth 狀態列；`cr` 成功訊息標示認證來源（provisioned/config）
+- `info` 顯示 Connection Request 帳密（CR user/pass）與認證來源
+  （provisioned > config）；`cr` 成功訊息標示認證來源（provisioned/config）
 - mock_cpe.py `/cr` 端點優先採用 TR-069 寫入的 ConnectionRequestUsername/
   Password 驗證 Digest（無則退回 --cr-user/--cr-pass），可完整驗證佈建閉環
 - Set/Get 失敗自動診斷：SetParameterValues 或 GetParameterValues 收到 SOAP
@@ -29,6 +54,10 @@ Bump `VERSION` in `version.py` and add an entry below for each release.
   "Invalid arguments."（模擬 Arcadyan 等 firmware 行為，供測試驗證）
 
 ### Changed
+- `log`（SOAP 記錄）改為**純 SOAP 模式**：開啟時 console 只顯示原始 SOAP
+  封包，摘要、Fault hint、自動診斷通知與 HTTP 存取日誌全部靜音
+  （config 寫入失敗警告除外）；所有事件仍完整記錄於 session 歷史，
+  隨時用 `hist` 查看。OFF 時行為不變
 - Set Fault 提示文字擴充：涵蓋型別不符、唯讀（廠商鎖定）、路徑不存在三種原因
 
 ## [1.3] - 2026-08-21

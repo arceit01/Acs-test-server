@@ -1,0 +1,12 @@
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthUserName=5661001
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthPassword=12312313
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.URI=sip:55661001@voip.arcadyan.com
+
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.Enable=Enabled
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthUserName=55661005
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthPassword=123123123
+
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.RegistrarServer=voip.arcadyan.com
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.ProxyServer=voip.arcadyan.com
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.OutboundProxy=voip.arcadyan.com
+

@@ -130,6 +130,23 @@ HELP = {
         "notes": "Restores the CPE to factory defaults - use with care. "
                  "Alias: fr.",
     },
+    "addobj": {
+        "summary": "Queue AddObject for the selected CPE",
+        "usage": ["addobj <object_path>"],
+        "args": [("object_path", "Multi-instance object path ending with '.' (e.g., Device.LAN.Device.)")],
+        "examples": ["addobj Device.LAN.Device.", "addobj InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface."],
+        "notes": "Creates a new instance of a multi-instance object. The CPE assigns the instance number "
+                 "and returns it in the response. The object path MUST end with '.'. "
+                 "Use 'names <parent>.' to discover available multi-instance objects.",
+    },
+    "delobj": {
+        "summary": "Queue DeleteObject for the selected CPE",
+        "usage": ["delobj <object_path>"],
+        "args": [("object_path", "Full object path including instance number ending with '.' (e.g., Device.LAN.Device.5.)")],
+        "examples": ["delobj Device.LAN.Device.5.", "delobj InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.3."],
+        "notes": "Deletes a specific object instance. The object path MUST include the instance number "
+                 "and end with '.'. Use 'names <parent>.' to list existing instances.",
+    },
     "fw": {
         "summary": "Queue a firmware upgrade Download RPC",
         "usage": ["fw download <url> [--username U] [--password P]",
@@ -181,10 +198,11 @@ HELP = {
         "args": [],
         "examples": ["log"],
         "notes": "Toggles printing of raw SOAP envelopes (default OFF; also "
-                 "set [cwmp].log_soap in config.json). Concise summaries - "
-                 "including parameter values - are always shown regardless. "
-                 "Turn ON to debug type or namespace issues; envelopes are "
-                 "truncated to 2000 chars.",
+                 "set [cwmp].log_soap in config.json). ON = show ONLY raw "
+                 "SOAP packets: summaries, hints and HTTP access logs are "
+                 "silenced - everything is still recorded, use `hist` to "
+                 "review. Turn ON to capture clean SOAP for analysis; "
+                 "envelopes are truncated to 2000 chars.",
     },
     "status": {
         "summary": "Show server status",
@@ -200,6 +218,31 @@ HELP = {
         "args": [("seconds", "Fractional seconds allowed, e.g. 0.5")],
         "examples": ["sleep 5"],
         "notes": "Incoming CPE traffic is still printed while sleeping.",
+    },
+    "open": {
+        "summary": "Load and queue SetParameterValues from a parameter file",
+        "usage": ["open <filepath>"],
+        "args": [("filepath", "Text file with 'path=value[:type]' per line (same syntax as 'set')")],
+        "examples": ["open params.txt", "open configs/batch_set.txt"],
+        "notes": "Each line: path=value[:type] (type aliases: bool/boolean, int, uint, string/str, double/float, dateTime/date). "
+                 "Lines starting with # are comments. Empty lines ignored. "
+                 "Any parse error cancels the entire batch - no RPCs are queued. "
+                 "Each parameter becomes a separate SetParameterValues RPC."
+    },
+    "clear": {
+        "summary": "Clear the pending RPC queue for the selected CPE",
+        "usage": ["clear [<idx|serial>]"],
+        "args": [("idx|serial", "Optional target; defaults to the selected CPE")],
+        "examples": ["clear", "clear MOCK001"],
+        "notes": "Removes all queued RPCs waiting to be sent to the CPE. "
+                 "Useful to cancel a batch queued by 'open' before triggering with 'cr'."
+    },
+    "show": {
+        "summary": "Show all queued RPCs for the selected (or given) CPE",
+        "usage": ["show [<idx|serial>]"],
+        "args": [("idx|serial", "Optional target; defaults to the selected CPE")],
+        "examples": ["show", "show MOCK001"],
+        "notes": "Displays the complete pending RPC queue with method and summary for each entry."
     },
     "quit": {
         "summary": "Exit the ACS test server",
@@ -342,7 +385,7 @@ class ConsoleUI(cmd.Cmd):
         if not tokens:
             return []
         cmd_name = _canonical(tokens[0])
-        if cmd_name in ("select", "info", "hist", "cr"):
+        if cmd_name in ("select", "info", "hist", "cr", "clear", "show"):
             serials = sorted(s.serial for s in self.registry.all())
             return [s for s in serials if s.startswith(text)]
         if cmd_name in ("get", "names"):
@@ -363,6 +406,17 @@ class ConsoleUI(cmd.Cmd):
             if text.startswith("--"):
                 return [o for o in FW_OPTIONS if o.startswith(text)]
             return []
+        if cmd_name == "open":
+            # File path completion
+            try:
+                import glob
+                return glob.glob(text + '*')
+            except Exception:
+                return []
+        if cmd_name in ("addobj", "delobj"):
+            # Object path completion (only paths ending with '.')
+            matches = self._path_matches(text)
+            return [m for m in matches if m.endswith(".")]
         return []
 
     def _path_matches(self, text: str) -> list[str]:
@@ -427,7 +481,7 @@ class ConsoleUI(cmd.Cmd):
                            f"{'LastEvent':<22} {'Informs':>7}  {'Pending':>7}  LastSeen")
         for i, s in enumerate(sessions, 1):
             marker = "*" if s.serial == self.selected else " "
-            event = s.events[0]["code"] if s.events else "-"
+            event = cwmp.format_event(s.events[0]) if s.events else "-"
             last = time.strftime("%H:%M:%S", time.localtime(s.last_seen))
             self.printer.print(
                 f"{marker}{i:<2} {s.serial:<20} {s.product_class or '?':<16} "
@@ -454,14 +508,25 @@ class ConsoleUI(cmd.Cmd):
             return
         created = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(sess.created_at))
         last = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(sess.last_seen))
-        events = ", ".join(e["code"] for e in sess.events) or "-"
+        events = ", ".join(cwmp.format_event(e) for e in sess.events) or "-"
+        # CR credential resolution mirrors do_cr: per-CPE provisioned > config.
+        cred = self.cfg.get("connection_request", {})
+        if sess.cr_username:
+            cr_user, cr_pass, cr_src = sess.cr_username, sess.cr_password, "provisioned"
+        elif cred.get("username"):
+            cr_user = cred.get("username", "")
+            cr_pass = cred.get("password", "")
+            cr_src = "config"
+        else:
+            cr_user, cr_pass, cr_src = "", "", ""
         lines = [
             f"SerialNumber   : {sess.serial}",
             f"Manufacturer   : {sess.manufacturer}",
             f"OUI            : {sess.oui}",
             f"ProductClass   : {sess.product_class}",
             f"ConnectionReq  : {sess.conn_req_url or '-'}",
-            f"CR auth        : {sess.cr_username + ' (provisioned)' if sess.cr_username else '-'}",
+            f"CR user        : {cr_user + f' ({cr_src})' if cr_user else '-'}",
+            f"CR pass        : {cr_pass or '-'}",
             f"First seen     : {created}",
             f"Last seen      : {last}",
             f"Informs        : {sess.inform_count}",
@@ -745,6 +810,117 @@ class ConsoleUI(cmd.Cmd):
             time.sleep(max(0.0, float(arg or 0)))
         except ValueError:
             self._usage("sleep <seconds>")
+
+    def do_open(self, arg):
+        """open <filepath> : load SetParameterValues from a parameter file"""
+        filepath = arg.strip()
+        if not filepath:
+            return self._usage("open <filepath>")
+
+        sess = self._need_session()
+        if not sess:
+            return
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        except OSError as e:
+            self.printer.print(f"Cannot open '{filepath}': {e}")
+            return
+
+        params = []
+        warnings = []
+        line_num = 0
+
+        for line in lines:
+            line_num += 1
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+
+            name, sep, raw = line.partition('=')
+            if not sep or not name:
+                self.printer.print(f"Line {line_num}: invalid format '{line}' (expected path=value[:type])")
+                return
+
+            value, xsd = self._resolve_set_value(sess, name, raw, warnings)
+            params.append((name, value, xsd))
+
+        if not params:
+            self.printer.print("No valid parameters found in file.")
+            return
+
+        for warning in warnings:
+            self.printer.print(f"WARNING: {warning}")
+
+        for name, value, xsd in params:
+            summary = f"{name}={value} [{xsd}]"
+            rpc = OutboundRPC("SetParameterValues", {"params": [(name, value, xsd)]}, summary)
+            self.registry.enqueue(sess.serial, rpc)
+
+        self.printer.print(f"Queued {len(params)} SetParameterValues RPC(s) for {sess.serial} from '{filepath}'")
+        self._hint(sess)
+
+    def do_addobj(self, arg):
+        """addobj <object_path> : queue AddObject for a multi-instance object"""
+        path = arg.strip()
+        if not path:
+            return self._usage("addobj Device.LAN.Device.")
+        if not path.endswith("."):
+            self.printer.print("Object path must end with '.' (e.g., Device.LAN.Device.)")
+            return
+        sess = self._need_session()
+        if not sess:
+            return
+        rpc = OutboundRPC("AddObject", {"object_name": path}, path)
+        self.registry.enqueue(sess.serial, rpc)
+        self.printer.print(f"Queued AddObject for {sess.serial}: {path}")
+        self._hint(sess)
+
+    def do_delobj(self, arg):
+        """delobj <object_path> : queue DeleteObject for a specific object instance"""
+        path = arg.strip()
+        if not path:
+            return self._usage("delobj Device.LAN.Device.5.")
+        if not path.endswith("."):
+            self.printer.print("Object path must end with '.' (e.g., Device.LAN.Device.5.)")
+            return
+        # Check that path contains an instance number (digit before final dot)
+        import re
+        if not re.search(r'\.\d+\.$', path):
+            self.printer.print("Object path must include instance number (e.g., Device.LAN.Device.5.)")
+            return
+        sess = self._need_session()
+        if not sess:
+            return
+        rpc = OutboundRPC("DeleteObject", {"object_name": path}, path)
+        self.registry.enqueue(sess.serial, rpc)
+        self.printer.print(f"Queued DeleteObject for {sess.serial}: {path}")
+        self._hint(sess)
+
+    def do_clear(self, arg):
+        """clear [idx|serial] : clear the pending RPC queue for the selected CPE"""
+        sess = self._need_session(arg)
+        if not sess:
+            return
+        count = len(sess.pending)
+        sess.pending.clear()
+        self.printer.print(f"Cleared {count} pending RPC(s) for {sess.serial}")
+
+    def do_show(self, arg):
+        """show [idx|serial] : show all queued RPCs for the selected CPE"""
+        sess = self._need_session(arg)
+        if not sess:
+            return
+        if not sess.pending:
+            self.printer.print(f"No pending RPCs for {sess.serial}")
+            return
+        self.printer.print(f"Pending RPCs for {sess.serial} ({len(sess.pending)}):")
+        self.printer.print(f"{'#':>2}  {'Method':<22}  Summary")
+        for i, rpc in enumerate(sess.pending, 1):
+            method = rpc.method
+            summary = rpc.summary
+            self.printer.print(f"{i:>2}  {method:<22}  {summary}")
 
     def do_quit(self, arg):
         """quit : exit the ACS test server (aliases: exit, q)"""

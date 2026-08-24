@@ -64,11 +64,16 @@ CPE 主動 Inform 或由 `cr` 觸發皆可。回應與 Fault 會即時顯示在 
 | `find <關鍵字>` | 搜尋已學習的參數路徑（不分大小寫，顯示 writable 旗標） |
 | `reboot [command_key]` | 排程 Reboot |
 | `factoryreset`（`fr`） | 排程 FactoryReset |
+| `addobj <路徑>` | 排程 AddObject（多實例物件路徑需以 `.` 結尾） |
+| `delobj <路徑>` | 排程 DeleteObject（需包含 instance number，以 `.` 結尾） |
 | `fw download <url> [選項]` | 排程韌體升級 Download RPC（見「韌體升級測試」） |
 | `cr [目標]` | 送出 Connection Request（HTTP GET + Digest Auth）給 CPE |
 | `hist [目標]` | 顯示該 CPE 的訊息收發歷史 |
-| `log` | 開/關原始 SOAP 封包記錄（預設關閉；摘要通知不受影響） |
+| `log` | 開/關原始 SOAP 封包記錄（預設關閉；ON = 只顯示 SOAP，摘要/hint/存取日誌全部靜音，完整紀錄仍可用 `hist` 查看） |
 | `status` | 伺服器狀態 |
+| `open <檔案>` | 從檔案批次載入 SetParameterValues 參數 |
+| `clear [目標]` | 清除指定 CPE 的待發送 RPC 佇列 |
+| `show [目標]` | 顯示指定 CPE 的待發送 RPC 佇列內容 |
 | `sleep <秒>` | 暫停（供腳本化測試） |
 | `quit` / `exit` / `q` | 結束 |
 
@@ -99,7 +104,8 @@ CPE 主動 Inform 或由 `cr` 觸發皆可。回應與 Fault 會即時顯示在 
   "cwmp": {
     "parameter_key": "acs-test-key",  // SetParameterValues 附帶的 ParameterKey
     "log_soap": false,                // 顯示原始 SOAP 封包（預設關閉；
-                                      // console 用 log 指令即時切換）
+                                      // console 用 log 指令即時切換；
+                                      // ON = 純 SOAP 模式，其他訊息靜音）
     "auto_provision_cr": true         // 0 BOOTSTRAP 時自動佈建 Connection
                                       // Request 帳密並寫回本檔
   },
@@ -183,6 +189,29 @@ cd /tmp/fw && python3 -m http.server 8000 &
 python3 mock_cpe.py --url http://127.0.0.1:7547/acs --serial MOCK001 ...
 # console: select 1 -> fw download http://127.0.0.1:8000/fw_v2.img -> cr
 ```
+
+## 物件實例管理（addobj / delobj）
+
+支援 TR-069 的 `AddObject` 與 `DeleteObject` RPC，用於建立/刪除多實例物件（如 PortMapping、IPInterface、LANDevice 等）。
+
+```
+acs[MOCK001]> addobj Device.LAN.Device.
+Queued AddObject for MOCK001: Device.LAN.Device.
+
+acs[MOCK001]> cr
+# CPE 回應: InstanceNumber=5, Status=0
+
+acs[MOCK001]> delobj Device.LAN.Device.5.
+Queued DeleteObject for MOCK001: Device.LAN.Device.5.
+
+acs[MOCK001]> cr
+# CPE 回應: Status=0
+```
+
+- `addobj <object_path>`：建立新實例。**路徑必須以 `.` 結尾**（如 `Device.LAN.Device.`）。CPE 會分配 instance number 並回傳。
+- `delobj <object_path>`：刪除指定實例。**路徑必須包含 instance number 並以 `.` 結尾**（如 `Device.LAN.Device.5.`）。
+- 使用 `names <parent>. true` 列舉可用的多實例物件與現有實例。
+- Tab 自動補齊支援：輸入部分路徑按 Tab 可補齊已知的物件節點（需先執行 `names` 學習）。
 
 ## 參數路徑 Tab 自動補齊
 
@@ -280,6 +309,8 @@ CPE 送出 event `0 BOOTSTRAP` 時，ACS 會自動（`cwmp.auto_provision_cr`，
 
 注意：
 
+- 部分韌體（如 Arcadyan）把 `0 BOOTSTRAP` 整串寫在 `<EventCode>` 內
+  （非標準）；ACS 會自動切分出事件代碼，佈建照常觸發
 - 每次 bootstrap 都會重新產生並重寫（值為確定性生成，冪等）
 - 多台 CPE 各有專屬帳密時，config 只保留最後一台（單機測試情境；
   per-CPE 帳密在運行中仍各自生效）

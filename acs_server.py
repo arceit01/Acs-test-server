@@ -44,7 +44,7 @@ DEFAULT_CONFIG = {
 
 SUPPORTED_RPC_METHODS = [
     "GetRPCMethods", "GetParameterNames", "GetParameterValues",
-    "SetParameterValues", "Reboot", "FactoryReset",
+    "SetParameterValues", "AddObject", "DeleteObject", "Reboot", "FactoryReset",
 ]
 
 
@@ -100,6 +100,10 @@ def build_rpc_xml(rpc, default_parameter_key: str) -> str | None:
         )
     if method == "FactoryReset":
         return cwmp.factory_reset(mid)
+    if method == "AddObject":
+        return cwmp.add_object(mid, args["object_name"], args.get("parameter_key", default_parameter_key))
+    if method == "DeleteObject":
+        return cwmp.delete_object(mid, args["object_name"], args.get("parameter_key", default_parameter_key))
     return None
 
 
@@ -129,9 +133,20 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
         return self.server.config_path
 
     def log_message(self, fmt, *args):
+        if self.cfg["cwmp"].get("log_soap"):
+            return  # raw SOAP mode: keep the console clean
         log.info("%s %s", self.address_string(), fmt % args)
 
     # ------------------------------------------------------------- plumbing
+
+    def _summary_notify(self, text: str):
+        """Console notification shown only when raw SOAP logging is OFF.
+
+        In SOAP mode the console shows raw packets only; everything here is
+        still recorded in the CPE session history (see `hist`).
+        """
+        if not self.cfg["cwmp"].get("log_soap"):
+            self.printer.notify(text)
 
     def _read_body(self) -> bytes:
         te = (self.headers.get("Transfer-Encoding") or "").lower()
@@ -205,7 +220,7 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
         sess.last_rpc = rpc
         xml = build_rpc_xml(rpc, self.cfg["cwmp"].get("parameter_key", ""))
         if xml is None:
-            self.printer.notify(f"[{sess.serial}] Skipped unknown RPC {rpc.method}")
+            self._summary_notify(f"[{sess.serial}] Skipped unknown RPC {rpc.method}")
             self._send_empty_ok()
             return
         sess.note("->", f"{rpc.method} {rpc.summary}".strip())
@@ -214,9 +229,13 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
             sess.last_set_params = [tuple(p) for p in (rpc.args.get("params") or [])]
         elif rpc.method == "GetParameterValues":
             sess.last_get_names = list(rpc.args.get("names") or [])
+        elif rpc.method == "AddObject":
+            sess.last_add_object = rpc.args.get("object_name", "")
+        elif rpc.method == "DeleteObject":
+            sess.last_delete_object = rpc.args.get("object_name", "")
         if not rpc.diagnostic:
             sess.diag_keys.clear()  # new user-initiated command: fresh diagnostics
-        self.printer.notify(f"[{sess.serial}] >> {rpc.method} {rpc.summary}".strip())
+        self._summary_notify(f"[{sess.serial}] >> {rpc.method} {rpc.summary}".strip())
         self._send(200, xml.encode("utf-8"))
 
     # ------------------------------------------------------------ HTTP verbs
@@ -272,11 +291,11 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
         info = cwmp.parse_inform(parsed["elem"])
         sess, created = self.registry.upsert_inform(info)
         self.session_serial = sess.serial
-        events = ", ".join(e["code"] for e in info["events"]) or "-"
+        events = ", ".join(cwmp.format_event(e) for e in info["events"]) or "-"
         summary = (f"[{sess.serial}] {'New CPE registered' if created else 'Inform'}:"
                    f" events=[{events}] retry={info['retry_count']}"
                    f" ({sess.manufacturer} {sess.product_class})")
-        self.printer.notify(summary)
+        self._summary_notify(summary)
         sess.note("<-", f"Inform events=[{events}]")
         self._maybe_provision_cr(sess, info)
         self._send(200, cwmp.inform_response(parsed["id"]).encode())
@@ -313,7 +332,7 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
             ", ".join(f"{n}={v} [{t}]" for n, v, t in params))
         self.registry.enqueue(sess.serial, rpc)
         sess.provision_pending = (username, password)
-        self.printer.notify(
+        self._summary_notify(
             f"[{sess.serial}] BOOTSTRAP: queued CR credential provisioning "
             f"({root[:-1]} data model)\n"
             f"  Username={username}\n  Password={password}")
@@ -329,11 +348,11 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
             username, password = pending
             sess.cr_username, sess.cr_password = username, password
             self._persist_credentials(username, password)
-            self.printer.notify(
+            self._summary_notify(
                 f"[{sess.serial}] CR credentials applied & saved to config - "
                 f"use `cr` to verify them")
         else:
-            self.printer.notify(
+            self._summary_notify(
                 f"[{sess.serial}] WARNING: CR credential provisioning not "
                 f"confirmed (Status={status or '?'}) - previous credentials "
                 f"remain active")
@@ -369,10 +388,17 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
                         sess.param_writable[name] = writable == "1"
             elif parsed["method"] == "SetParameterValuesResponse":
                 self._check_cr_provisioning(sess, parsed)
+            elif parsed["method"] == "AddObjectResponse":
+                result = cwmp.extract_add_object_response(parsed["elem"])
+                instance_num = result.get("instance_number", "")
+                if instance_num:
+                    self._summary_notify(f"[{sess.serial}] AddObject created instance: {instance_num}")
+            elif parsed["method"] == "DeleteObjectResponse":
+                pass  # Status handled in format_response
             sess.note("<-", f"{parsed['method']}:\n{summary}")
-            self.printer.notify(f"[{sess.serial}] << {parsed['method']}\n{summary}")
+            self._summary_notify(f"[{sess.serial}] << {parsed['method']}\n{summary}")
         else:
-            self.printer.notify(f"<< {parsed['method']}\n{summary}")
+            self._summary_notify(f"<< {parsed['method']}\n{summary}")
         self._advance_session()
 
     def _queue_fault_diagnostics(self, sess) -> list[str]:
@@ -437,9 +463,9 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
                 hint += "\nauto-diagnosis queued:\n" + "\n".join(diag)
         if sess:
             sess.note("<-", f"Fault:\n{summary}")
-            self.printer.notify(f"[{sess.serial}] << FAULT\n{summary}{hint}")
+            self._summary_notify(f"[{sess.serial}] << FAULT\n{summary}{hint}")
         else:
-            self.printer.notify(f"<< FAULT\n{summary}{hint}")
+            self._summary_notify(f"<< FAULT\n{summary}{hint}")
         self._advance_session()
 
     def _handle_transfer_complete(self, parsed):
@@ -454,13 +480,14 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
         sess = self._current_session()
         if sess:
             sess.note("<-", text)
-            self.printer.notify(f"[{sess.serial}] << {text}")
+            self._summary_notify(f"[{sess.serial}] << {text}")
         else:
-            self.printer.notify(f"<< {text}")
+            self._summary_notify(f"<< {text}")
         self._send(200, cwmp.transfer_complete_response(parsed["id"]).encode())
 
     def _handle_get_rpc_methods(self, parsed):
-        self.printer.notify(f"<< GetRPCMethods -> replying with {len(SUPPORTED_RPC_METHODS)} methods")
+        self._summary_notify(f"<< GetRPCMethods -> replying with "
+                             f"{len(SUPPORTED_RPC_METHODS)} methods")
         xml = cwmp.get_rpc_methods_response(parsed["id"] or cwmp.next_msg_id(),
                                             SUPPORTED_RPC_METHODS)
         self._send(200, xml.encode())

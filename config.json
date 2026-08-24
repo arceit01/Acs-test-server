@@ -15,13 +15,14 @@
     }
   },
   "connection_request": {
-    "username": "",
-    "password": "",
+    "username": "3806E6-ARLTFIBRA6S-ARLT50470045",
+    "password": "fa18cd96e862d809484ee85e7d414299",
     "timeout": 10
   },
   "cwmp": {
     "parameter_key": "acs-test-key",
-    "log_soap": false
+    "log_soap": false,
+    "auto_provision_cr": true
   },
   "logging": {
     "level": "INFO"

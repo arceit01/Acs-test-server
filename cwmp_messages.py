@@ -173,6 +173,26 @@ def factory_reset(msg_id) -> str:
     return envelope(msg_id, "<cwmp:FactoryReset/>")
 
 
+def add_object(msg_id, object_name: str, parameter_key: str = "") -> str:
+    body = (
+        "<cwmp:AddObject>"
+        f"<ObjectName>{xml_escape(object_name)}</ObjectName>"
+        f"<ParameterKey>{xml_escape(parameter_key)}</ParameterKey>"
+        "</cwmp:AddObject>"
+    )
+    return envelope(msg_id, body)
+
+
+def delete_object(msg_id, object_name: str, parameter_key: str = "") -> str:
+    body = (
+        "<cwmp:DeleteObject>"
+        f"<ObjectName>{xml_escape(object_name)}</ObjectName>"
+        f"<ParameterKey>{xml_escape(parameter_key)}</ParameterKey>"
+        "</cwmp:DeleteObject>"
+    )
+    return envelope(msg_id, body)
+
+
 def get_rpc_methods_response(msg_id, methods) -> str:
     methods = list(methods)
     items = "".join(f"<string>{m}</string>" for m in methods)
@@ -295,13 +315,20 @@ def parse_inform(elem: ET.Element) -> dict:
         for field in ("Manufacturer", "OUI", "ProductClass", "SerialNumber"):
             device_id[field] = child_text(dev_elem, field)
 
+    # EventCode normalization: some firmwares (e.g. Arcadyan) put the whole
+    # '0 BOOTSTRAP' string inside <EventCode> instead of just the code.
+    # Split on whitespace so consumers always see a bare code ('0'), keeping
+    # the tail as the command key when <CommandKey> is absent.
     events = []
     ev_elem = find_child(elem, "Event")
     if ev_elem is not None:
         for struct in find_children(ev_elem, "EventStruct"):
+            code_text = child_text(struct, "EventCode")
+            code, _, tail = code_text.partition(" ")
+            command_key = child_text(struct, "CommandKey") or tail.strip()
             events.append({
-                "code": child_text(struct, "EventCode"),
-                "command_key": child_text(struct, "CommandKey"),
+                "code": code.strip(),
+                "command_key": command_key,
             })
 
     params = {}
@@ -321,6 +348,11 @@ def parse_inform(elem: ET.Element) -> dict:
         "current_time": child_text(elem, "CurrentTime"),
         "retry_count": child_text(elem, "RetryCount", "0"),
     }
+
+
+def format_event(event: dict) -> str:
+    """Human-readable event label ('0 BOOTSTRAP') from a parsed EventStruct."""
+    return f"{event.get('code', '')} {event.get('command_key', '')}".strip()
 
 
 def format_fault(elem: ET.Element) -> str:
@@ -380,6 +412,19 @@ def extract_param_infos(elem: ET.Element) -> list[tuple[str, str | None]]:
     return result
 
 
+def extract_add_object_response(elem: ET.Element) -> dict:
+    """Extract InstanceNumber and Status from AddObjectResponse."""
+    instance_num = child_text(elem, "InstanceNumber")
+    status = child_text(elem, "Status")
+    return {"instance_number": instance_num, "status": status}
+
+
+def extract_delete_object_response(elem: ET.Element) -> dict:
+    """Extract Status from DeleteObjectResponse."""
+    status = child_text(elem, "Status")
+    return {"status": status}
+
+
 def format_response(method: str, elem: ET.Element | None) -> str:
     """Human-readable summary of a CPE RPC response element."""
     if elem is None:
@@ -409,6 +454,16 @@ def format_response(method: str, elem: ET.Element | None) -> str:
             if value:
                 lines.append(f"{field}={value}")
         return "\n".join(lines)
+    if localname(elem.tag) == "AddObjectResponse":
+        instance_num = child_text(elem, "InstanceNumber")
+        status = child_text(elem, "Status")
+        meaning = {"0": "created", "1": "created after reboot"}.get(status, "")
+        lines = [f"InstanceNumber={instance_num}", f"Status={status}" + (f" ({meaning})" if meaning else "")]
+        return "\n".join(lines)
+    if localname(elem.tag) == "DeleteObjectResponse":
+        status = child_text(elem, "Status")
+        meaning = {"0": "deleted", "1": "deleted after reboot"}.get(status, "")
+        return f"Status={status}" + (f" ({meaning})" if meaning else "")
     status = child_text(elem, "Status")
     if status:
         return f"Status={status}"

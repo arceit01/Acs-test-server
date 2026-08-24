@@ -38,6 +38,8 @@ class CPESession:
     last_sent: str = ""  # method name of the most recent ACS->CPE RPC
     last_set_params: list = field(default_factory=list)  # [(name, value, type)] of most recent SetParameterValues
     last_get_names: list = field(default_factory=list)   # names of the most recent GetParameterValues
+    last_add_object: str = ""   # object name of most recent AddObject
+    last_delete_object: str = ""  # object name of most recent DeleteObject
     diag_keys: set = field(default_factory=set)  # diagnostics already queued for the current command
     last_rpc: OutboundRPC | None = None  # most recent RPC sent (response correlation)
     provision_pending: tuple | None = None  # (username, password) awaiting set confirmation
