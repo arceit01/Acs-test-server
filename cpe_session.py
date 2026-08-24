@@ -16,6 +16,7 @@ class OutboundRPC:
     method: str
     args: dict = field(default_factory=dict)
     summary: str = ""
+    diagnostic: bool = False  # auto-queued by fault diagnostics
 
 
 @dataclass
@@ -26,12 +27,20 @@ class CPESession:
     inform_params: dict = field(default_factory=dict)
     param_types: dict = field(default_factory=dict)  # name -> last reported xsi:type
     known_params: set = field(default_factory=set)   # learned paths for tab completion
+    param_writable: dict = field(default_factory=dict)  # name -> writable flag from GetParameterNames
     conn_req_url: str = ""
+    cr_username: str = ""  # dynamic ConnectionRequest credentials (bootstrap-provisioned)
+    cr_password: str = ""
     created_at: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
     inform_count: int = 0
     session_active: bool = False
     last_sent: str = ""  # method name of the most recent ACS->CPE RPC
+    last_set_params: list = field(default_factory=list)  # [(name, value, type)] of most recent SetParameterValues
+    last_get_names: list = field(default_factory=list)   # names of the most recent GetParameterValues
+    diag_keys: set = field(default_factory=set)  # diagnostics already queued for the current command
+    last_rpc: OutboundRPC | None = None  # most recent RPC sent (response correlation)
+    provision_pending: tuple | None = None  # (username, password) awaiting set confirmation
     pending: deque = field(default_factory=deque)
     history: list = field(default_factory=list)
 

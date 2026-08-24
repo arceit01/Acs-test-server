@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import logging
 import ssl
@@ -17,11 +18,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cwmp_messages as cwmp
-from cpe_session import SessionRegistry
+from cpe_session import OutboundRPC, SessionRegistry
 from console_ui import ConsolePrinter, ConsoleUI
 from version import VERSION
 
 log = logging.getLogger("acs")
+
+# Max parameters auto-diagnosed after a single failed Set/Get.
+DIAGNOSTIC_PARAM_LIMIT = 5
 
 DEFAULT_CONFIG = {
     "server": {
@@ -33,7 +37,8 @@ DEFAULT_CONFIG = {
         "auth": {"enabled": False, "username": "acsuser", "password": "acspass"},
     },
     "connection_request": {"username": "", "password": "", "timeout": 10},
-    "cwmp": {"parameter_key": "acs-test-key", "log_soap": False},
+    "cwmp": {"parameter_key": "acs-test-key", "log_soap": False,
+             "auto_provision_cr": True},
     "logging": {"level": "INFO"},
 }
 
@@ -119,6 +124,10 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
     def printer(self) -> ConsolePrinter:
         return self.server.printer
 
+    @property
+    def config_path(self) -> str:
+        return self.server.config_path
+
     def log_message(self, fmt, *args):
         log.info("%s %s", self.address_string(), fmt % args)
 
@@ -193,6 +202,7 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
             sess.session_active = False
             self._send_empty_ok()
             return
+        sess.last_rpc = rpc
         xml = build_rpc_xml(rpc, self.cfg["cwmp"].get("parameter_key", ""))
         if xml is None:
             self.printer.notify(f"[{sess.serial}] Skipped unknown RPC {rpc.method}")
@@ -200,6 +210,12 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
             return
         sess.note("->", f"{rpc.method} {rpc.summary}".strip())
         sess.last_sent = rpc.method
+        if rpc.method == "SetParameterValues":
+            sess.last_set_params = [tuple(p) for p in (rpc.args.get("params") or [])]
+        elif rpc.method == "GetParameterValues":
+            sess.last_get_names = list(rpc.args.get("names") or [])
+        if not rpc.diagnostic:
+            sess.diag_keys.clear()  # new user-initiated command: fresh diagnostics
         self.printer.notify(f"[{sess.serial}] >> {rpc.method} {rpc.summary}".strip())
         self._send(200, xml.encode("utf-8"))
 
@@ -262,7 +278,78 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
                    f" ({sess.manufacturer} {sess.product_class})")
         self.printer.notify(summary)
         sess.note("<-", f"Inform events=[{events}]")
+        self._maybe_provision_cr(sess, info)
         self._send(200, cwmp.inform_response(parsed["id"]).encode())
+
+    def _maybe_provision_cr(self, sess, info):
+        """On '0 BOOTSTRAP', queue Connection Request credential provisioning.
+
+        Mirrors common ACS provisioning scripts: Username =
+        OUI-ProductClass-SerialNumber, Password = lowercase MD5 hex of the
+        username, written to ManagementServer.ConnectionRequestUsername/
+        Password (root prefix auto-detected from the Inform data model).
+        Credentials are applied per-CPE and persisted to config.json once the
+        CPE confirms the set.
+        """
+        if not self.cfg["cwmp"].get("auto_provision_cr", True):
+            return
+        if not any(e.get("code") == "0" for e in info.get("events", [])):
+            return
+        username = "-".join(str(sess.device_id.get(k) or "")
+                            for k in ("OUI", "ProductClass", "SerialNumber"))
+        password = hashlib.md5(username.encode()).hexdigest()
+        root = ("Device." if any(k.startswith("Device.")
+                                 for k in info.get("params", {}))
+                else "InternetGatewayDevice.")
+        params = [
+            (f"{root}ManagementServer.ConnectionRequestUsername",
+             username, "xsd:string"),
+            (f"{root}ManagementServer.ConnectionRequestPassword",
+             password, "xsd:string"),
+        ]
+        rpc = OutboundRPC(
+            "SetParameterValues",
+            {"params": params, "purpose": "provision_cr"},
+            ", ".join(f"{n}={v} [{t}]" for n, v, t in params))
+        self.registry.enqueue(sess.serial, rpc)
+        sess.provision_pending = (username, password)
+        self.printer.notify(
+            f"[{sess.serial}] BOOTSTRAP: queued CR credential provisioning "
+            f"({root[:-1]} data model)\n"
+            f"  Username={username}\n  Password={password}")
+
+    def _check_cr_provisioning(self, sess, parsed):
+        """Confirm CR credential provisioning on SetParameterValuesResponse."""
+        rpc = sess.last_rpc
+        if rpc is None or rpc.args.get("purpose") != "provision_cr":
+            return
+        pending, sess.provision_pending = sess.provision_pending, None
+        status = cwmp.child_text(parsed["elem"], "Status")
+        if status == "0" and pending:
+            username, password = pending
+            sess.cr_username, sess.cr_password = username, password
+            self._persist_credentials(username, password)
+            self.printer.notify(
+                f"[{sess.serial}] CR credentials applied & saved to config - "
+                f"use `cr` to verify them")
+        else:
+            self.printer.notify(
+                f"[{sess.serial}] WARNING: CR credential provisioning not "
+                f"confirmed (Status={status or '?'}) - previous credentials "
+                f"remain active")
+
+    def _persist_credentials(self, username: str, password: str):
+        try:
+            cred = self.cfg.setdefault("connection_request", {})
+            cred["username"] = username
+            cred["password"] = password
+            with open(self.config_path, "w", encoding="utf-8") as fh:
+                json.dump(self.cfg, fh, indent=2, ensure_ascii=False)
+                fh.write("\n")
+        except OSError as exc:
+            log.error("Cannot write config %s: %s", self.config_path, exc)
+            self.printer.notify(f"WARNING: could not save credentials to "
+                                f"config: {exc}")
 
     def _handle_rpc_response(self, parsed):
         summary = cwmp.format_response(parsed["method"], parsed["elem"])
@@ -275,21 +362,79 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
                         sess.param_types[name] = xsi
                 sess.known_params.update(values.keys())
             elif parsed["method"] == "GetParameterNamesResponse":
-                sess.known_params.update(cwmp.extract_param_names(parsed["elem"]))
+                infos = cwmp.extract_param_infos(parsed["elem"])
+                sess.known_params.update(name for name, _w in infos)
+                for name, writable in infos:
+                    if writable is not None:
+                        sess.param_writable[name] = writable == "1"
+            elif parsed["method"] == "SetParameterValuesResponse":
+                self._check_cr_provisioning(sess, parsed)
             sess.note("<-", f"{parsed['method']}:\n{summary}")
             self.printer.notify(f"[{sess.serial}] << {parsed['method']}\n{summary}")
         else:
             self.printer.notify(f"<< {parsed['method']}\n{summary}")
         self._advance_session()
 
+    def _queue_fault_diagnostics(self, sess) -> list[str]:
+        """After a failed Set/Get, queue RPCs that reveal why: whether each
+        parameter exists, whether it is writable, and its CPE-reported type.
+
+        Diagnostics for the current command are issued once only (a failed
+        diagnostic get must not re-queue the same names request).
+        """
+        if sess.last_sent == "SetParameterValues":
+            source = [str(p[0]) for p in sess.last_set_params]
+        elif sess.last_sent == "GetParameterValues":
+            source = list(sess.last_get_names)
+        else:
+            return []
+        names = list(dict.fromkeys(source))[:DIAGNOSTIC_PARAM_LIMIT]
+        if not names:
+            return []
+
+        def once(key: str) -> bool:
+            if key in sess.diag_keys:
+                return False
+            sess.diag_keys.add(key)
+            return True
+
+        lines = []
+        parents_done: set[str] = set()
+        for name in names:
+            parent = name[:name.rfind(".") + 1]
+            if (sess.last_sent == "SetParameterValues"
+                    and once(f"get:{name}")):
+                self.registry.enqueue(sess.serial, OutboundRPC(
+                    "GetParameterValues", {"names": [name]}, name,
+                    diagnostic=True))
+                lines.append(f"  get {name}  (fault here = path does not exist)")
+            if (parent and parent not in parents_done
+                    and once(f"names:{parent}")):
+                parents_done.add(parent)
+                self.registry.enqueue(sess.serial, OutboundRPC(
+                    "GetParameterNames",
+                    {"path": parent, "next_level": True},
+                    f"path={parent} nextlevel=True", diagnostic=True))
+                lines.append(f"  names {parent}  (writable=0 = read-only/locked)")
+        return lines
+
     def _handle_fault(self, parsed):
         summary = cwmp.format_fault(parsed["elem"])
         hint = ""
         sess = self._current_session()
         if sess and sess.last_sent == "SetParameterValues":
-            hint = ("\nhint: invalid arguments often mean a type mismatch - "
-                    "run 'get <parameter>' to see the CPE-reported type, then "
-                    "'set <path>=<value>:<type>' (e.g. :bool, :string)")
+            hint = ("\nhint: invalid arguments usually mean a type mismatch, "
+                    "a read-only (vendor-locked) parameter, or a path that "
+                    "does not exist on this firmware")
+            rpc = sess.last_rpc
+            if rpc is not None and rpc.args.get("purpose") == "provision_cr":
+                sess.provision_pending = None
+                hint += "\nnote: this was the CR credential provisioning - " \
+                        "previous CPE credentials remain active"
+        if sess:
+            diag = self._queue_fault_diagnostics(sess)
+            if diag:
+                hint += "\nauto-diagnosis queued:\n" + "\n".join(diag)
         if sess:
             sess.note("<-", f"Fault:\n{summary}")
             self.printer.notify(f"[{sess.serial}] << FAULT\n{summary}{hint}")
@@ -337,7 +482,6 @@ def main(argv=None):
         level=getattr(logging, str(cfg["logging"].get("level", "INFO")).upper(),
                       logging.INFO),
         format="%(asctime)s %(levelname)-7s %(message)s")
-
     srv_cfg = cfg["server"]
     tls_cfg = srv_cfg.get("tls", {})
     host, port = srv_cfg.get("host", "0.0.0.0"), int(srv_cfg.get("port", 7547))
@@ -355,6 +499,7 @@ def main(argv=None):
     httpd.registry = registry
     httpd.cfg = cfg
     httpd.printer = printer
+    httpd.config_path = args.config
 
     tls_enabled = bool(tls_cfg.get("enabled"))
     if tls_enabled:

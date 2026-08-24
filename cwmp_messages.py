@@ -361,11 +361,23 @@ def extract_param_values(elem: ET.Element) -> dict[str, tuple[str, str | None]]:
 
 def extract_param_names(elem: ET.Element) -> list[str]:
     """Extract parameter names from a GetParameterNamesResponse element."""
+    return [name for name, _w in extract_param_infos(elem)]
+
+
+def extract_param_infos(elem: ET.Element) -> list[tuple[str, str | None]]:
+    """Extract (name, writable) from a GetParameterNamesResponse element.
+
+    writable is the raw '0'/'1' text, or None when absent.
+    """
     pl = find_child(elem, "ParameterList")
+    result: list[tuple[str, str | None]] = []
     if pl is None:
-        return []
-    return [child_text(struct, "Name")
-            for struct in find_children(pl, "ParameterInfoStruct")]
+        return result
+    for struct in find_children(pl, "ParameterInfoStruct"):
+        name = child_text(struct, "Name")
+        writable = child_text(struct, "Writable", "") or None
+        result.append((name, writable))
+    return result
 
 
 def format_response(method: str, elem: ET.Element | None) -> str:

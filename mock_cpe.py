@@ -59,7 +59,8 @@ def verify_digest(header_value: str, method: str, username: str, password: str) 
 class MockCPE:
     def __init__(self, acs_url: str, serial: str, oui: str, manufacturer: str,
                  product_class: str, software_version: str, cr_host: str,
-                 cr_port: int, cr_user: str, cr_pass: str):
+                 cr_port: int, cr_user: str, cr_pass: str,
+                 strict_set: bool = False):
         self.acs_url = acs_url
         self.serial = serial
         self.oui = oui
@@ -70,6 +71,9 @@ class MockCPE:
         self.cr_port = cr_port
         self.cr_user = cr_user
         self.cr_pass = cr_pass
+        # strict_set: mimic firmwares (e.g. Arcadyan) that reject writes to
+        # unknown parameters with CWMP fault 9003 "Invalid arguments".
+        self.strict_set = strict_set
         self._session_lock = threading.Lock()
 
         self.params = {
@@ -199,12 +203,21 @@ class MockCPE:
         if method == "SetParameterValues":
             pl = cwmp.find_child(elem, "ParameterList")
             applied = []
+            unknown = []
             for struct in cwmp.find_children(pl, "ParameterValueStruct"):
                 name = cwmp.child_text(struct, "Name")
                 ve = cwmp.find_child(struct, "Value")
                 value = "".join(ve.itertext()).strip() if ve is not None else ""
+                if self.strict_set and name not in self.params:
+                    unknown.append(name)
+                    continue
                 self.params[name] = value
                 applied.append(name)
+            if unknown:
+                print(f"[cpe] rejected unknown parameter(s): "
+                      f"{', '.join(unknown)}", flush=True)
+                return cwmp.soap_fault(mid, "Client",
+                                       "Invalid arguments. ", 9003)
             param_key = cwmp.child_text(elem, "ParameterKey")
             if param_key:
                 self.params["InternetGatewayDevice.ManagementServer.ParameterKey"] = param_key
@@ -335,7 +348,17 @@ class CRHandler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] != "/cr":
             return self._plain(404, b"not found\n")
         cpe = type(self).cpe
-        if cpe.cr_user:
+        # Credentials provisioned via TR-069 take precedence over the
+        # static --cr-user/--cr-pass arguments.
+        dyn_user = cpe.params.get(
+            "InternetGatewayDevice.ManagementServer.ConnectionRequestUsername",
+            "")
+        dyn_pass = cpe.params.get(
+            "InternetGatewayDevice.ManagementServer.ConnectionRequestPassword",
+            "")
+        req_user, req_pass = ((dyn_user, dyn_pass) if dyn_user
+                              else (cpe.cr_user, cpe.cr_pass))
+        if req_user:
             authz = self.headers.get("Authorization") or ""
             if not authz.startswith("Digest "):
                 nonce = secrets.token_hex(16)
@@ -346,7 +369,7 @@ class CRHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            if not verify_digest(authz, "GET", cpe.cr_user, cpe.cr_pass):
+            if not verify_digest(authz, "GET", req_user, req_pass):
                 return self._plain(403, b"forbidden\n")
         self._plain(200, b"OK")
         print("[cpe] connection request accepted - starting session", flush=True)
@@ -372,13 +395,17 @@ def main():
                         help="first Inform uses event 0 BOOTSTRAP instead of 1 BOOT")
     parser.add_argument("--periodic", type=int, default=0, metavar="SEC",
                         help="send a periodic Inform every SEC seconds")
+    parser.add_argument("--strict-set", action="store_true",
+                        help="reject writes to unknown parameters with "
+                             "fault 9003 (mimics e.g. Arcadyan firmware)")
     parser.add_argument("--delay", type=float, default=0.5,
                         help="delay before the first Inform (seconds)")
     args = parser.parse_args()
 
     cpe = MockCPE(args.url, args.serial, args.oui, args.manufacturer,
                   args.product_class, args.software_version, args.cr_host,
-                  args.cr_port, args.cr_user, args.cr_pass)
+                  args.cr_port, args.cr_user, args.cr_pass,
+                  strict_set=args.strict_set)
     CRHandler.cpe = cpe
 
     cr_server = ThreadingHTTPServer((args.cr_host, args.cr_port), CRHandler)

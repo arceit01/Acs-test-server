@@ -3,6 +3,34 @@
 All notable changes to the TR-069 ACS test tool are documented here.
 Bump `VERSION` in `version.py` and add an entry below for each release.
 
+## [1.4] - 2026-08-24
+
+### Added
+- Bootstrap 自動佈建 Connection Request 帳密（`cwmp.auto_provision_cr`，
+  預設開啟）：CPE 送 `0 BOOTSTRAP` 時產生 Username =
+  `{OUI}-{ProductClass}-{SerialNumber}`、Password = 小寫 MD5 hex，依資料
+  模型（Device.* / InternetGatewayDevice.*）下發 SetParameterValues；
+  CPE 確認後帳密記錄至該 CPE session 並寫回 config.json `[connection_request]`。
+  `cr` 帳密解析順序改為：該 CPE 佈建帳密 > config 全域；佈建失敗不動 config
+- `info` 新增 CR auth 狀態列；`cr` 成功訊息標示認證來源（provisioned/config）
+- mock_cpe.py `/cr` 端點優先採用 TR-069 寫入的 ConnectionRequestUsername/
+  Password 驗證 Digest（無則退回 --cr-user/--cr-pass），可完整驗證佈建閉環
+- Set/Get 失敗自動診斷：SetParameterValues 或 GetParameterValues 收到 SOAP
+  Fault 時，自動排入後續 RPC 並在同一 session 內顯示結果
+  - Set 後：對每個失敗路徑（去重、上限 5 筆）送 `GetParameterValues(同路徑)`
+    （回值 = 路徑存在、問題在型別/唯讀；再 Fault = 路徑不存在）+
+    `GetParameterNames(父物件, nextlevel)`（writable=0 = 唯讀/鎖定）
+  - Get 後：對父物件送 `GetParameterNames(nextlevel)`，協助找出正確實例編號
+- `find <關鍵字>` 指令：以不分大小寫子字串搜尋已學習的參數路徑
+  （來源 Inform/get/names 回應），顯示已知 writable 旗標；
+  供掃 vendor tree 找鎖定/解鎖參數（X_* 節點、lock/passwd/token 等）
+- GetParameterNamesResponse 的 writable 旗標現會記錄（`param_writable`）
+- mock_cpe.py 新增 `--strict-set`：set 不存在的參數時回 Fault 9003
+  "Invalid arguments."（模擬 Arcadyan 等 firmware 行為，供測試驗證）
+
+### Changed
+- Set Fault 提示文字擴充：涵蓋型別不符、唯讀（廠商鎖定）、路徑不存在三種原因
+
 ## [1.3] - 2026-08-21
 
 ### Changed

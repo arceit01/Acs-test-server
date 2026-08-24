@@ -54,7 +54,9 @@ HELP = {
         ],
         "notes": "Requests are queued and delivered when the CPE starts a "
                  "session - use 'cr' to trigger one immediately. Types "
-                 "reported by the CPE are remembered and reused by 'set'.",
+                 "reported by the CPE are remembered and reused by 'set'. "
+                 "If a get fails, a GetParameterNames on the parent object "
+                 "is queued automatically to help find the correct path.",
     },
     "set": {
         "summary": "Queue SetParameterValues for the selected CPE",
@@ -74,8 +76,10 @@ HELP = {
                  "inference (true/false -> boolean, integers -> int, floats -> "
                  "double, else string). Boolean values also accept "
                  "enabled/disabled/on/off and are normalized to 1/0. A Fault "
-                 "9003 usually means a type mismatch: run 'get <path>' first, "
-                 "then retry with ':<type>'.",
+                 "after a set usually means a type mismatch, a read-only "
+                 "(vendor-locked) parameter, or a non-existent path: the ACS "
+                 "automatically queues get/names diagnostics and their "
+                 "responses follow in the same session.",
     },
     "names": {
         "summary": "Queue GetParameterNames for the selected CPE",
@@ -92,6 +96,23 @@ HELP = {
             "names InternetGatewayDevice. true",
         ],
         "notes": "Responses list each parameter with its writable flag.",
+    },
+    "find": {
+        "summary": "Search learned parameter paths for a keyword",
+        "usage": ["find <keyword>"],
+        "args": [("keyword", "Case-insensitive substring matched against "
+                             "every path learned from Inform/get/names "
+                             "responses")],
+        "examples": [
+            "find lock",
+            "find OutboundProxy",
+            "find X_TELUS",
+        ],
+        "notes": "Handy for hunting vendor nodes (X_ARC_COM, X_TELUS, ...) or "
+                 "lock/auth/password-like parameters in a large data model. "
+                 "Knowledge grows as you run 'names' - an empty result may "
+                 "just mean that subtree has not been enumerated yet. Known "
+                 "writable flags are shown when available.",
     },
     "reboot": {
         "summary": "Queue Reboot for the selected CPE",
@@ -440,6 +461,7 @@ class ConsoleUI(cmd.Cmd):
             f"OUI            : {sess.oui}",
             f"ProductClass   : {sess.product_class}",
             f"ConnectionReq  : {sess.conn_req_url or '-'}",
+            f"CR auth        : {sess.cr_username + ' (provisioned)' if sess.cr_username else '-'}",
             f"First seen     : {created}",
             f"Last seen      : {last}",
             f"Informs        : {sess.inform_count}",
@@ -542,6 +564,35 @@ class ConsoleUI(cmd.Cmd):
         self.printer.print(f"Queued GetParameterNames for {sess.serial}: {summary}")
         self._hint(sess)
 
+    def do_find(self, arg):
+        """find <keyword> : list learned parameter paths containing keyword"""
+        kw = arg.strip()
+        if not kw:
+            return self._usage("find <keyword>  (e.g. find lock)")
+        sessions = self.registry.all()
+        if not sessions:
+            self.printer.print("No CPE has connected yet.")
+            return
+        sess = self._resolve()
+        known = sess.known_params if sess is not None else set()
+        if not known:
+            known = set().union(*(s.known_params for s in sessions))
+        matches = sorted(p for p in known if kw.lower() in p.lower())
+        if not matches:
+            self.printer.print(
+                f"No learned parameter contains '{kw}'. Knowledge grows from "
+                "Inform/get/names responses - run 'names <path>' to enumerate "
+                "more of the tree, then retry.")
+            return
+        writable: dict[str, bool] = {}
+        for s in sessions:
+            writable.update(s.param_writable)
+        for p in matches:
+            w = writable.get(p)
+            suffix = f"  (writable={'1' if w else '0'})" if w is not None else ""
+            self.printer.print(f"{p}{suffix}")
+        self.printer.print(f"-- {len(matches)} match(es) for '{kw}' --")
+
     def do_reboot(self, arg):
         """reboot [command_key] : queue Reboot for the selected CPE"""
         key = arg.strip() or "acs-test-reboot"
@@ -623,8 +674,9 @@ class ConsoleUI(cmd.Cmd):
                                "(not present in the last Inform).")
             return
         cred = self.cfg.get("connection_request", {})
-        user = cred.get("username") or ""
-        pwd = cred.get("password") or ""
+        user = sess.cr_username or cred.get("username") or ""
+        pwd = sess.cr_password or cred.get("password") or ""
+        source = "provisioned" if sess.cr_username else "config"
         timeout = float(cred.get("timeout", 10))
         try:
             if user:
@@ -638,7 +690,8 @@ class ConsoleUI(cmd.Cmd):
                 opener = urllib.request.build_opener()
             req = urllib.request.Request(sess.conn_req_url, method="GET")
             with opener.open(req, timeout=timeout) as resp:
-                self.printer.print(f"[{sess.serial}] Connection request -> HTTP {resp.code}")
+                self.printer.print(f"[{sess.serial}] Connection request -> "
+                                   f"HTTP {resp.code} (auth: {source})")
         except urllib.error.HTTPError as exc:
             self.printer.print(f"[{sess.serial}] Connection request failed: "
                                f"HTTP {exc.code} {exc.reason}")
