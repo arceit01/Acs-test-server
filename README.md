@@ -1,4 +1,4 @@
-# TR-069 ACS 測試工具 v1.4
+# TR-069 ACS 測試工具 v1.5
 
 以 Python 標準函式庫實作的 TR-069/CWMP Auto Configuration Server（ACS）測試伺服器。
 可讓 CPE（client）連線，並透過互動式 console 對 CPE 下發 Get / Set 參數等 RPC 指令。
