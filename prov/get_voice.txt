@@ -1,0 +1,15 @@
+# VoIP Configuration Parameters - GET Example
+# This file can be used with: open --get prov/get_voice.txt
+
+# Line 1 Authentication
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthUserName
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthPassword
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.URI
+
+# Line 1 Status
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.Enable
+
+# SIP Server Configuration
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.RegistrarServer
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.ProxyServer
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.OutboundProxy

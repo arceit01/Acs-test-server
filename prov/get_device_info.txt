@@ -1,0 +1,17 @@
+# Device Information Parameters
+# This file demonstrates mixed format compatibility
+# Can be used for both GET (--get) and SET operations
+
+# Basic Device Info (pure path format)
+InternetGatewayDevice.DeviceInfo.Manufacturer
+InternetGatewayDevice.DeviceInfo.ModelName
+InternetGatewayDevice.DeviceInfo.SoftwareVersion
+InternetGatewayDevice.DeviceInfo.HardwareVersion
+InternetGatewayDevice.DeviceInfo.SerialNumber
+
+# Network Settings (path=value format - value ignored in GET mode)
+InternetGatewayDevice.ManagementServer.URL=http://acs.example.com/acs
+InternetGatewayDevice.ManagementServer.Username=cpeuser
+InternetGatewayDevice.ManagementServer.Password=cpepass
+InternetGatewayDevice.ManagementServer.PeriodicInformEnable=true:boolean
+InternetGatewayDevice.ManagementServer.PeriodicInformInterval=86400:uint

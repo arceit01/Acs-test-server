@@ -220,14 +220,17 @@ HELP = {
         "notes": "Incoming CPE traffic is still printed while sleeping.",
     },
     "open": {
-        "summary": "Load and queue SetParameterValues from a parameter file",
-        "usage": ["open <filepath>"],
-        "args": [("filepath", "Text file with 'path=value[:type]' per line (same syntax as 'set')")],
-        "examples": ["open params.txt", "open configs/batch_set.txt"],
-        "notes": "Each line: path=value[:type] (type aliases: bool/boolean, int, uint, string/str, double/float, dateTime/date). "
-                 "Lines starting with # are comments. Empty lines ignored. "
-                 "Any parse error cancels the entire batch - no RPCs are queued. "
-                 "Each parameter becomes a separate SetParameterValues RPC."
+        "summary": "Load and queue parameters from a file (SET or GET operations)",
+        "usage": ["open <filepath>", "open --get <filepath>"],
+        "args": [("filepath", "Text file with parameters"),
+                 ("--get", "Optional flag: GET mode reads parameter paths and queues a single GetParameterValues RPC")],
+        "examples": ["open params.txt", "open --get prov/voice.txt", "open configs/batch_set.txt"],
+        "notes": "SET mode (default): Each line is 'path=value[:type]' (type aliases: bool/boolean, int, uint, string/str, double/float, dateTime/date). "
+                 "Each parameter becomes a separate SetParameterValues RPC. "
+                 "GET mode (--get): Each line is a parameter path (or 'path=value' where value is ignored). "
+                 "All parameters are packed into a single GetParameterValues RPC for efficiency. "
+                 "Both modes support # comments and empty lines. "
+                 "Any parse error cancels the entire batch - no RPCs are queued."
     },
     "clear": {
         "summary": "Clear the pending RPC queue for the selected CPE",
@@ -812,10 +815,25 @@ class ConsoleUI(cmd.Cmd):
             self._usage("sleep <seconds>")
 
     def do_open(self, arg):
-        """open <filepath> : load SetParameterValues from a parameter file"""
-        filepath = arg.strip()
+        """open [--get] <filepath> : load parameters from a file (SET or GET)"""
+        tokens = shlex.split(arg)
+        if not tokens:
+            return self._usage("open [--get] <filepath>")
+
+        # Parse --get flag
+        get_mode = False
+        filepath = None
+        for token in tokens:
+            if token == "--get":
+                get_mode = True
+            elif not filepath:
+                filepath = token
+            else:
+                self.printer.print(f"Unexpected argument: {token}")
+                return self._usage("open [--get] <filepath>")
+
         if not filepath:
-            return self._usage("open <filepath>")
+            return self._usage("open [--get] <filepath>")
 
         sess = self._need_session()
         if not sess:
@@ -828,38 +846,70 @@ class ConsoleUI(cmd.Cmd):
             self.printer.print(f"Cannot open '{filepath}': {e}")
             return
 
-        params = []
-        warnings = []
-        line_num = 0
+        if get_mode:
+            # GET mode: extract parameter paths (ignore values)
+            param_names = []
+            line_num = 0
+            for line in lines:
+                line_num += 1
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
 
-        for line in lines:
-            line_num += 1
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
+                # Support both "path" and "path=value" formats
+                name, sep, raw = line.partition('=')
+                name = name.strip()
+                if not name:
+                    self.printer.print(f"Line {line_num}: empty parameter name in '{line}'")
+                    return
 
-            name, sep, raw = line.partition('=')
-            if not sep or not name:
-                self.printer.print(f"Line {line_num}: invalid format '{line}' (expected path=value[:type])")
+                param_names.append(name)
+
+            if not param_names:
+                self.printer.print("No valid parameters found in file.")
                 return
 
-            value, xsd = self._resolve_set_value(sess, name, raw, warnings)
-            params.append((name, value, xsd))
-
-        if not params:
-            self.printer.print("No valid parameters found in file.")
-            return
-
-        for warning in warnings:
-            self.printer.print(f"WARNING: {warning}")
-
-        for name, value, xsd in params:
-            summary = f"{name}={value} [{xsd}]"
-            rpc = OutboundRPC("SetParameterValues", {"params": [(name, value, xsd)]}, summary)
+            # Queue single GetParameterValues RPC with all parameters
+            args = {"names": param_names}
+            summary = f"{len(param_names)} parameter(s)"
+            rpc = OutboundRPC("GetParameterValues", args, summary)
             self.registry.enqueue(sess.serial, rpc)
+            self.printer.print(f"Queued GetParameterValues for {sess.serial}: {len(param_names)} parameter(s) from '{filepath}'")
+            self._hint(sess)
+        else:
+            # SET mode: original behavior
+            params = []
+            warnings = []
+            line_num = 0
 
-        self.printer.print(f"Queued {len(params)} SetParameterValues RPC(s) for {sess.serial} from '{filepath}'")
-        self._hint(sess)
+            for line in lines:
+                line_num += 1
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+
+                name, sep, raw = line.partition('=')
+                if not sep or not name:
+                    self.printer.print(f"Line {line_num}: invalid format '{line}' (expected path=value[:type])")
+                    return
+
+                value, xsd = self._resolve_set_value(sess, name, raw, warnings)
+                params.append((name, value, xsd))
+
+            if not params:
+                self.printer.print("No valid parameters found in file.")
+                return
+
+            for warning in warnings:
+                self.printer.print(f"WARNING: {warning}")
+
+            for name, value, xsd in params:
+                summary = f"{name}={value} [{xsd}]"
+                rpc = OutboundRPC("SetParameterValues", {"params": [(name, value, xsd)]}, summary)
+                self.registry.enqueue(sess.serial, rpc)
+
+            self.printer.print(f"Queued {len(params)} SetParameterValues RPC(s) for {sess.serial} from '{filepath}'")
+            self._hint(sess)
 
     def do_addobj(self, arg):
         """addobj <object_path> : queue AddObject for a multi-instance object"""

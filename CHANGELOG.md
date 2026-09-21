@@ -3,6 +3,22 @@
 All notable changes to the TR-069 ACS test tool are documented here.
 Bump `VERSION` in `version.py` and add an entry below for each release.
 
+## [1.6] - 2026-09-21
+
+### Added
+- `open --get <filepath>` 指令：批次 GetParameterValues 支援
+  - 從檔案讀取多個參數路徑，打包成單一 GetParameterValues RPC
+  - 檔案格式相容 SET 模式：支援純路徑（`path`）或 `path=value` 格式（GET 時忽略 value）
+  - 支援 `#` 註解與空行
+  - 效率優化：所有參數合併為單一請求，而非多個獨立 RPC
+  - 範例檔案：`prov/get_voice.txt`、`prov/get_device_info.txt`
+  - 同一檔案可用於 GET（查詢目前值）和 SET（批次更新）兩種操作
+
+### Changed
+- `open` 指令擴充支援 `--get` 選項，原 SET 模式功能不變
+- HELP 文件更新：新增 `--get` 選項說明與使用範例
+- README.md 新增「批次參數操作（open）」章節，詳細說明 SET/GET 模式差異
+
 ## [1.5] - 2026-08-24
 
 ### Added

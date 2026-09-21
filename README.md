@@ -71,7 +71,7 @@ CPE 主動 Inform 或由 `cr` 觸發皆可。回應與 Fault 會即時顯示在 
 | `hist [目標]` | 顯示該 CPE 的訊息收發歷史 |
 | `log` | 開/關原始 SOAP 封包記錄（預設關閉；ON = 只顯示 SOAP，摘要/hint/存取日誌全部靜音，完整紀錄仍可用 `hist` 查看） |
 | `status` | 伺服器狀態 |
-| `open <檔案>` | 從檔案批次載入 SetParameterValues 參數 |
+| `open [--get] <檔案>` | 從檔案批次載入參數（預設 SET，加 `--get` 為 GET） |
 | `clear [目標]` | 清除指定 CPE 的待發送 RPC 佇列 |
 | `show [目標]` | 顯示指定 CPE 的待發送 RPC 佇列內容 |
 | `sleep <秒>` | 暫停（供腳本化測試） |
@@ -232,6 +232,66 @@ Linux/macOS 原生支援）：
 - `fw` 補齊子命令（`fw <Tab>` → `download`）與選項（`--<Tab>` 列出
   `--username/--password/--filesize/--targetfile/--delay/--cmdkey`）；
   URL 為任意輸入不補
+
+## 批次參數操作（open）
+
+`open` 指令支援從檔案批次載入參數，進行 **SET** 或 **GET** 操作：
+
+### SET 模式（預設）
+
+```
+acs[MOCK001]> open prov/voice.txt
+Queued 11 SetParameterValues RPC(s) for MOCK001 from 'prov/voice.txt'
+```
+
+檔案格式：每行 `path=value[:type]`（與 `set` 指令相同語法）
+
+```
+# prov/voice.txt
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthUserName=5661001
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthPassword=12312313
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.Enable=true:boolean
+```
+
+每個參數產生一個獨立的 `SetParameterValues` RPC。
+
+### GET 模式（`--get`）
+
+```
+acs[MOCK001]> open --get prov/get_voice.txt
+Queued GetParameterValues for MOCK001: 7 parameter(s) from 'prov/get_voice.txt'
+```
+
+檔案格式：每行一個參數路徑（或 `path=value`，GET 時忽略 value）
+
+```
+# prov/get_voice.txt
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthUserName
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.SIP.AuthPassword
+Device.Services.VoiceService.1.VoiceProfile.1.Line.1.Enable
+Device.Services.VoiceService.1.VoiceProfile.1.SIP.RegistrarServer
+```
+
+**所有參數打包成單一 `GetParameterValues` RPC**，效率更高。
+
+### 檔案格式通用規則
+
+- 支援 `#` 註解與空行
+- GET 模式相容 SET 格式：`path=value` 中的 value 部分會被忽略
+- 可使用相同檔案進行 GET（查詢目前值）和 SET（批次更新）操作
+- 任何解析錯誤會取消整批操作，不排隊任何 RPC
+
+### 使用流程
+
+```bash
+# 1. 批次查詢參數目前值
+acs[MOCK001]> open --get prov/voice.txt
+acs[MOCK001]> cr
+
+# 2. 檢視回應後，修改檔案並批次更新
+acs[MOCK001]> open prov/voice.txt
+acs[MOCK001]> cr
+```
 
 ## 參數型別處理（set）
 
