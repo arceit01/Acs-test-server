@@ -1,0 +1,16 @@
+# Transfer Complete Event Script - Firmware Upgrade Verification
+# Triggered when CPE sends Event Code: 7 TRANSFER COMPLETE
+# Verifies firmware upgrade success
+
+#MODE=get
+
+# Verify new firmware version
+Device.DeviceInfo.SoftwareVersion
+Device.DeviceInfo.HardwareVersion
+
+# Check boot status
+Device.DeviceInfo.UpTime
+
+# Verify management server connection
+Device.ManagementServer.URL
+Device.ManagementServer.ConnectionRequestURL

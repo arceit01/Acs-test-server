@@ -1,4 +1,4 @@
-# TR-069 ACS 測試工具 v1.5
+# TR-069 ACS 測試工具 v1.7
 
 以 Python 標準函式庫實作的 TR-069/CWMP Auto Configuration Server（ACS）測試伺服器。
 可讓 CPE（client）連線，並透過互動式 console 對 CPE 下發 Get / Set 參數等 RPC 指令。
@@ -16,6 +16,8 @@
 - 解析並顯示 CPE 回應與 SOAP Fault、TransferComplete
 - Set/Get 失敗自動診斷：收到 Fault 自動排入 get/names 查明路徑是否存在、
   writable 與型別（見「Set/Get 失敗自動診斷」）
+- **事件驅動自動化腳本**：根據 CPE Inform 事件自動執行腳本，實現自動佈建、監控和診斷
+  （見「事件驅動自動化腳本」）
 - 互動式 console 操作，訊息即時顯示
 
 ## 環境需求
@@ -375,6 +377,250 @@ CPE 送出 event `0 BOOTSTRAP` 時，ACS 會自動（`cwmp.auto_provision_cr`，
 - 多台 CPE 各有專屬帳密時，config 只保留最後一台（單機測試情境；
   per-CPE 帳密在運行中仍各自生效）
 - 佈建被拒（Fault）時不寫 config，CPE 維持舊帳密，console 顯示警告
+
+## 事件驅動自動化腳本
+
+ACS 支援根據 CPE 發送的 Inform 事件自動執行腳本，實現**零人工介入的自動化佈建、監控和診斷**。
+
+### 功能特點
+
+- **事件觸發**：CPE 發送特定 Event（如 BOOTSTRAP、BOOT、PERIODIC）時自動執行對應腳本
+- **多層級回退**：Serial Number → OUI → ProductClass → 預設腳本（優先權遞減）
+- **靈活操作**：支援 GET（監控查詢）、SET（自動配置）、AUTO（混合模式）
+- **可配置時機**：在 InformResponse 前/後執行（`timing: before_response/after_response`）
+- **錯誤處理**：記錄繼續 / 使用備用腳本 / 中斷 session（可配置）
+- **完整記錄**：腳本執行記錄到 Session history 和伺服器日誌
+
+### 啟用與配置
+
+在 `config.json` 中配置：
+
+```json
+{
+  "event_scripts": {
+    "enabled": true,
+    "timing": "before_response",
+    "mappings": {
+      "0": {
+        "mode": "set",
+        "script": "prov/events/bootstrap.txt",
+        "fallback": "prov/events/default_init.txt"
+      },
+      "1": {
+        "mode": "get",
+        "script": "prov/events/boot.txt"
+      },
+      "2": {
+        "mode": "get",
+        "script": "prov/events/periodic.txt"
+      }
+    },
+    "device_overrides": {
+      "MOCK001": {
+        "0": {
+          "mode": "set",
+          "script": "prov/devices/MOCK001_bootstrap.txt"
+        }
+      }
+    },
+    "on_error": "log_continue",
+    "log_execution": true
+  }
+}
+```
+
+完整配置範例請參考 `config_event_scripts_example.json`。
+
+### 腳本格式
+
+腳本檔案與 `open` 指令格式完全相容，支援 `#MODE=` 指令標記：
+
+#### GET 模式（監控查詢）
+
+```
+#MODE=get
+# Boot health check
+Device.DeviceInfo.UpTime
+Device.DeviceInfo.SoftwareVersion
+Device.IP.Interface.1.Status
+Device.ManagementServer.URL
+```
+
+#### SET 模式（自動配置）
+
+```
+#MODE=set
+# Bootstrap provisioning
+Device.ManagementServer.PeriodicInformEnable=true:boolean
+Device.ManagementServer.PeriodicInformInterval=300:uint
+Device.Time.NTPServer1=time.google.com
+```
+
+#### AUTO 模式（混合操作）
+
+```
+#MODE=auto
+# Mixed operations
+Device.DeviceInfo.SoftwareVersion              # GET（無 '='）
+Device.ManagementServer.PeriodicInformInterval=600:uint  # SET（有 '='）
+Device.IP.Interface.1.Status                   # GET
+```
+
+### 事件代碼對照表
+
+| 代碼 | 事件名稱 | 說明 | 典型用途 |
+|------|---------|------|---------|
+| `0` | BOOTSTRAP | 首次啟動/恢復出廠設置 | 初始化佈建配置 |
+| `1` | BOOT | 設備重啟 | 重啟後健康檢查 |
+| `2` | PERIODIC | 週期性 Inform | 定期監控數據收集 |
+| `4` | VALUE CHANGE | 參數值變更 | 配置變更追蹤 |
+| `6` | CONNECTION REQUEST | ACS 觸發的連接 | 主動管理指令 |
+| `7` | TRANSFER COMPLETE | 檔案傳輸完成 | 韌體升級驗證 |
+
+### 腳本查找優先級
+
+當 CPE 發送 Inform 時，ACS 按以下順序查找腳本：
+
+```
+1. device_overrides[SerialNumber][event_code]     (最高優先權)
+   └─ 例如：prov/devices/MOCK001_bootstrap.txt
+
+2. oui_overrides[OUI][event_code]
+   └─ 例如：prov/oui/AABBCC_bootstrap.txt
+
+3. product_class_overrides[ProductClass][event_code]
+   └─ 例如：prov/products/MockCPE_boot.txt
+
+4. mappings[event_code]                            (預設腳本)
+   └─ 例如：prov/events/bootstrap.txt
+
+5. mappings[event_code].fallback                   (備用腳本)
+   └─ 僅當主腳本失敗且 on_error=use_fallback 時使用
+```
+
+### 使用範例
+
+#### 範例 1：BOOTSTRAP 自動初始化
+
+**配置**：
+```json
+{
+  "event_scripts": {
+    "enabled": true,
+    "mappings": {
+      "0": {
+        "mode": "set",
+        "script": "prov/events/bootstrap.txt"
+      }
+    }
+  }
+}
+```
+
+**腳本** (`prov/events/bootstrap.txt`)：
+```
+#MODE=set
+Device.ManagementServer.PeriodicInformEnable=true:boolean
+Device.ManagementServer.PeriodicInformInterval=300:uint
+Device.Time.NTPServer1=time.google.com
+```
+
+**行為**：CPE 首次連線或恢復出廠設置時，ACS 自動配置管理參數。
+
+#### 範例 2：BOOT 健康檢查
+
+**配置**：
+```json
+{
+  "event_scripts": {
+    "enabled": true,
+    "mappings": {
+      "1": {
+        "mode": "get",
+        "script": "prov/events/boot.txt"
+      }
+    }
+  }
+}
+```
+
+**腳本** (`prov/events/boot.txt`)：
+```
+#MODE=get
+Device.DeviceInfo.UpTime
+Device.DeviceInfo.SoftwareVersion
+Device.IP.Interface.1.Status
+```
+
+**行為**：CPE 重啟後，ACS 自動查詢關鍵參數驗證設備狀態。
+
+#### 範例 3：設備特定配置
+
+**配置**：
+```json
+{
+  "event_scripts": {
+    "enabled": true,
+    "mappings": {
+      "0": {
+        "mode": "set",
+        "script": "prov/events/bootstrap.txt"
+      }
+    },
+    "device_overrides": {
+      "MOCK001": {
+        "0": {
+          "mode": "set",
+          "script": "prov/devices/MOCK001_bootstrap.txt"
+        }
+      }
+    }
+  }
+}
+```
+
+**行為**：
+- MOCK001 使用 `MOCK001_bootstrap.txt`（設備特定配置）
+- 其他設備使用 `bootstrap.txt`（通用配置）
+
+### 配置選項詳解
+
+| 選項 | 說明 | 預設值 | 選項 |
+|------|------|--------|------|
+| `enabled` | 總開關 | `false` | `true`/`false` |
+| `timing` | 執行時機 | `before_response` | `before_response`/`after_response` |
+| `mode` | 腳本模式 | `auto` | `get`/`set`/`auto` |
+| `on_error` | 錯誤處理 | `log_continue` | `log_continue`/`use_fallback`/`abort_session` |
+| `max_scripts_per_event` | 每事件最大腳本數 | `1` | 任意正整數 |
+| `log_execution` | 記錄腳本執行 | `true` | `true`/`false` |
+
+### 目錄結構
+
+```
+prov/
+├── events/                    # 預設事件腳本
+│   ├── bootstrap.txt         # 0 BOOTSTRAP - 初始化佈建
+│   ├── boot.txt              # 1 BOOT - 重啟驗證
+│   ├── periodic.txt          # 2 PERIODIC - 定期監控
+│   ├── transfer_complete.txt # 7 TRANSFER COMPLETE - 韌體驗證
+│   └── mixed_example.txt     # AUTO 模式範例
+├── devices/                   # 設備特定腳本（Serial Number）
+│   └── MOCK001_bootstrap.txt
+├── oui/                       # OUI 特定腳本（製造商）
+└── products/                  # ProductClass 特定腳本（型號）
+```
+
+### 注意事項
+
+- **向後相容**：預設 `enabled: false`，不影響現有使用者
+- **錯誤隔離**：腳本執行失敗不會中斷 CWMP session（除非 `on_error: abort_session`）
+- **性能考量**：大量 RPC 可能延長 session 時間，建議控制腳本複雜度
+- **安全性**：腳本路徑需正確設定，避免路徑遍歷攻擊
+- **日誌記錄**：執行狀態記錄到 `sess.history` 和 `log`，可用 `hist` 查看
+
+### 詳細文檔
+
+完整使用指南請參考：`EVENT_SCRIPTS_GUIDE.md`
 
 ## 已知限制
 

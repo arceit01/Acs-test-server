@@ -1,0 +1,66 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 7547,
+    "path": "/acs",
+    "tls": {
+      "enabled": false,
+      "cert_file": "certs/server.crt",
+      "key_file": "certs/server.key"
+    },
+    "auth": {
+      "enabled": false,
+      "username": "acsuser",
+      "password": "acspass"
+    }
+  },
+  "connection_request": {
+    "username": "",
+    "password": "",
+    "timeout": 10
+  },
+  "cwmp": {
+    "parameter_key": "acs-test-key",
+    "log_soap": false,
+    "auto_provision_cr": true
+  },
+  "event_scripts": {
+    "enabled": true,
+    "timing": "before_response",
+    "mappings": {
+      "0": {
+        "mode": "set",
+        "script": "prov/events/bootstrap.txt",
+        "fallback": "prov/events/default_init.txt"
+      },
+      "1": {
+        "mode": "get",
+        "script": "prov/events/boot.txt"
+      },
+      "2": {
+        "mode": "get",
+        "script": "prov/events/periodic.txt"
+      },
+      "7": {
+        "mode": "get",
+        "script": "prov/events/transfer_complete.txt"
+      }
+    },
+    "device_overrides": {
+      "MOCK001": {
+        "0": {
+          "mode": "set",
+          "script": "prov/devices/MOCK001_bootstrap.txt"
+        }
+      }
+    },
+    "oui_overrides": {},
+    "product_class_overrides": {},
+    "on_error": "log_continue",
+    "max_scripts_per_event": 1,
+    "log_execution": true
+  },
+  "logging": {
+    "level": "INFO"
+  }
+}

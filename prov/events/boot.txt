@@ -1,0 +1,20 @@
+# Boot Event Script - Post-Reboot Verification
+# Triggered when CPE sends Event Code: 1 BOOT
+# Queries key system parameters to verify device health
+
+#MODE=get
+
+# System information
+Device.DeviceInfo.UpTime
+Device.DeviceInfo.SoftwareVersion
+Device.DeviceInfo.HardwareVersion
+Device.DeviceInfo.SerialNumber
+
+# Management server connectivity
+Device.ManagementServer.URL
+Device.ManagementServer.PeriodicInformEnable
+Device.ManagementServer.PeriodicInformInterval
+
+# Network status
+Device.IP.Interface.1.Status
+Device.IP.Interface.1.IPv4Address.1.IPAddress

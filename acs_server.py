@@ -39,6 +39,17 @@ DEFAULT_CONFIG = {
     "connection_request": {"username": "", "password": "", "timeout": 10},
     "cwmp": {"parameter_key": "acs-test-key", "log_soap": False,
              "auto_provision_cr": True},
+    "event_scripts": {
+        "enabled": False,
+        "timing": "before_response",
+        "mappings": {},
+        "device_overrides": {},
+        "oui_overrides": {},
+        "product_class_overrides": {},
+        "on_error": "log_continue",
+        "max_scripts_per_event": 1,
+        "log_execution": True,
+    },
     "logging": {"level": "INFO"},
 }
 
@@ -46,6 +57,261 @@ SUPPORTED_RPC_METHODS = [
     "GetRPCMethods", "GetParameterNames", "GetParameterValues",
     "SetParameterValues", "AddObject", "DeleteObject", "Reboot", "FactoryReset",
 ]
+
+
+class EventScriptManager:
+    """Manage event-driven script execution triggered by CPE Inform events.
+    
+    Features:
+    - Configurable event-to-script mapping
+    - Multi-level fallback: Serial -> OUI -> ProductClass -> Default
+    - Support for GET/SET operations with auto-detection
+    - Configurable timing (before/after InformResponse)
+    - Error handling with fallback scripts
+    """
+    
+    def __init__(self, config, registry, logger):
+        """Initialize the event script manager.
+        
+        Args:
+            config: Full server configuration dict
+            registry: SessionRegistry instance
+            logger: Logger instance
+        """
+        self.config = config.get("event_scripts", {})
+        self.registry = registry
+        self.logger = logger
+        self.enabled = self.config.get("enabled", False)
+    
+    def trigger(self, sess, info):
+        """Trigger scripts based on events in Inform.
+        
+        Args:
+            sess: CPESession instance
+            info: Parsed Inform data (from parse_inform)
+        """
+        if not self.enabled:
+            return
+        
+        events = info.get("events", [])
+        max_scripts = self.config.get("max_scripts_per_event", 1)
+        
+        for event in events:
+            event_code = event.get("code")
+            if event_code:
+                self._execute_for_event(sess, event_code, event, max_scripts)
+    
+    def _execute_for_event(self, sess, event_code, event, max_scripts):
+        """Find and execute script for a specific event.
+        
+        Args:
+            sess: CPESession instance
+            event_code: Event code string (e.g., "0", "1", "2")
+            event: Event dict with code and command_key
+            max_scripts: Maximum number of scripts to execute
+        """
+        # Find script config with multi-level fallback
+        script_config = self._find_script(sess, event_code)
+        if not script_config:
+            self.logger.debug(f"[{sess.serial}] No script configured for event {event_code}")
+            return
+        
+        script_path = script_config.get("script")
+        mode = script_config.get("mode", "auto")
+        fallback_path = script_config.get("fallback")
+        
+        # Execute main script
+        success = self._execute_script(sess, script_path, mode, event_code)
+        
+        # Error handling
+        if not success:
+            on_error = self.config.get("on_error", "log_continue")
+            if on_error == "use_fallback" and fallback_path:
+                self.logger.info(f"[{sess.serial}] Main script failed, trying fallback: {fallback_path}")
+                self._execute_script(sess, fallback_path, mode, event_code)
+            elif on_error == "abort_session":
+                raise Exception(f"Event script execution failed: {script_path}")
+            # Default: log_continue - already logged in _execute_script
+    
+    def _find_script(self, sess, event_code):
+        """Find script with priority: Serial -> OUI -> ProductClass -> Default.
+        
+        Args:
+            sess: CPESession instance
+            event_code: Event code string
+            
+        Returns:
+            Script config dict or None
+        """
+        # 1. Device-specific (Serial Number)
+        device_overrides = self.config.get("device_overrides", {})
+        if sess.serial in device_overrides:
+            if event_code in device_overrides[sess.serial]:
+                cfg = device_overrides[sess.serial][event_code]
+                self.logger.debug(f"[{sess.serial}] Using device-specific script for event {event_code}")
+                return cfg
+        
+        # 2. OUI-specific
+        oui = sess.oui
+        oui_overrides = self.config.get("oui_overrides", {})
+        if oui and oui in oui_overrides:
+            if event_code in oui_overrides[oui]:
+                cfg = oui_overrides[oui][event_code]
+                self.logger.debug(f"[{sess.serial}] Using OUI-specific script for event {event_code}")
+                return cfg
+        
+        # 3. ProductClass-specific
+        pc = sess.product_class
+        pc_overrides = self.config.get("product_class_overrides", {})
+        if pc and pc in pc_overrides:
+            if event_code in pc_overrides[pc]:
+                cfg = pc_overrides[pc][event_code]
+                self.logger.debug(f"[{sess.serial}] Using ProductClass-specific script for event {event_code}")
+                return cfg
+        
+        # 4. Default mapping
+        mappings = self.config.get("mappings", {})
+        if event_code in mappings:
+            self.logger.debug(f"[{sess.serial}] Using default script for event {event_code}")
+            return mappings[event_code]
+        
+        return None
+    
+    def _execute_script(self, sess, script_path, mode, event_code):
+        """Load and execute a provisioning script.
+        
+        Args:
+            sess: CPESession instance
+            script_path: Path to script file
+            mode: Script mode ('get', 'set', or 'auto')
+            event_code: Event code for logging
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        import os
+        
+        try:
+            with open(script_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        except OSError as e:
+            self.logger.warning(f"[{sess.serial}] Cannot open script '{script_path}': {e}")
+            return False
+        
+        # Parse script mode and parameters
+        actual_mode = mode
+        params_get = []
+        params_set = []
+        line_num = 0
+        
+        for line in lines:
+            line_num += 1
+            line = line.strip()
+            
+            # Skip empty lines
+            if not line:
+                continue
+            
+            # Check for MODE directive
+            if line.startswith('#MODE='):
+                mode_value = line[6:].strip().lower()
+                if mode_value in ('get', 'set', 'auto'):
+                    actual_mode = mode_value
+                    self.logger.debug(f"[{sess.serial}] Script mode set to: {mode_value}")
+                continue
+            
+            # Skip other comments
+            if line.startswith('#'):
+                continue
+            
+            # Parse parameter line
+            name, sep, raw = line.partition('=')
+            name = name.strip()
+            
+            if not name:
+                self.logger.debug(f"[{sess.serial}] Skipping empty line {line_num} in {script_path}")
+                continue
+            
+            # Determine operation based on mode and format
+            if sep and raw.strip() and actual_mode in ('set', 'auto'):
+                # SET operation: has '=' and value
+                params_set.append((name, raw.strip()))
+            else:
+                # GET operation: no '=' or mode is 'get'
+                if actual_mode != 'set':
+                    params_get.append(name)
+        
+        # Queue RPCs
+        queued_count = 0
+        
+        # GET RPC (single RPC with all parameters)
+        if params_get:
+            rpc = OutboundRPC(
+                "GetParameterValues",
+                {"names": params_get},
+                f"event:{event_code}:get:{len(params_get)}param",
+                diagnostic=True  # Mark as auto-executed
+            )
+            self.registry.enqueue(sess.serial, rpc)
+            queued_count += 1
+            self.logger.debug(f"[{sess.serial}] Queued GET: {len(params_get)} parameters")
+        
+        # SET RPCs (each parameter separate)
+        for name, raw in params_set:
+            value, xsd = self._resolve_set_value(sess, name, raw)
+            rpc = OutboundRPC(
+                "SetParameterValues",
+                {"params": [(name, value, xsd)]},
+                f"event:{event_code}:set:{name}",
+                diagnostic=True
+            )
+            self.registry.enqueue(sess.serial, rpc)
+            queued_count += 1
+        
+        if queued_count > 0:
+            # Record to session history
+            if self.config.get("log_execution", True):
+                sess.note("EVENT", f"Script triggered: {os.path.basename(script_path)} "
+                                   f"(event={event_code}, queued={queued_count} RPC)")
+            
+            self.logger.info(f"[{sess.serial}] Executed event script: {script_path} "
+                           f"(event={event_code}, mode={actual_mode}, "
+                           f"GET={len(params_get)}, SET={len(params_set)})")
+            return True
+        else:
+            self.logger.warning(f"[{sess.serial}] No valid operations in script: {script_path}")
+            return False
+    
+    def _resolve_set_value(self, sess, name, raw):
+        """Resolve SET value and type (simplified from console_ui.py).
+        
+        Args:
+            sess: CPESession instance
+            name: Parameter name
+            raw: Raw value string (may include :type suffix)
+            
+        Returns:
+            Tuple of (value, xsd_type)
+        """
+        # Extract explicit type suffix (e.g., "value:boolean")
+        base, colon, suffix = raw.rpartition(":")
+        if colon and suffix:
+            alias = cwmp.resolve_type_alias(suffix)
+            if alias:
+                raw = base
+                coerced = cwmp.coerce_value(raw, alias)
+                return (coerced if coerced else raw), alias
+        
+        # Use remembered type from previous GetParameterValues
+        remembered = sess.param_types.get(name)
+        if remembered:
+            coerced = cwmp.coerce_value(raw, remembered)
+            if coerced is not None:
+                return coerced, remembered
+        
+        # Auto-infer type
+        xsd, value = cwmp.infer_xsd_type(raw)
+        return value, xsd
 
 
 def deep_merge(base: dict, override: dict) -> dict:
@@ -131,6 +397,10 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
     @property
     def config_path(self) -> str:
         return self.server.config_path
+
+    @property
+    def event_script_mgr(self) -> EventScriptManager:
+        return self.server.event_script_mgr
 
     def log_message(self, fmt, *args):
         if self.cfg["cwmp"].get("log_soap"):
@@ -298,7 +568,24 @@ class ACSRequestHandler(BaseHTTPRequestHandler):
         self._summary_notify(summary)
         sess.note("<-", f"Inform events=[{events}]")
         self._maybe_provision_cr(sess, info)
+        
+        # Trigger event-driven scripts (before_response timing)
+        timing = self.cfg.get("event_scripts", {}).get("timing", "before_response")
+        if timing == "before_response":
+            try:
+                self.event_script_mgr.trigger(sess, info)
+            except Exception as e:
+                log.error(f"[{sess.serial}] Event script execution failed: {e}")
+                # Continue with InformResponse even if script fails
+        
         self._send(200, cwmp.inform_response(parsed["id"]).encode())
+        
+        # Trigger event-driven scripts (after_response timing)
+        if timing == "after_response":
+            try:
+                self.event_script_mgr.trigger(sess, info)
+            except Exception as e:
+                log.error(f"[{sess.serial}] Event script execution failed: {e}")
 
     def _maybe_provision_cr(self, sess, info):
         """On '0 BOOTSTRAP', queue Connection Request credential provisioning.
@@ -523,10 +810,12 @@ def main(argv=None):
 
     registry = SessionRegistry()
     printer = ConsolePrinter()
+    event_script_mgr = EventScriptManager(cfg, registry, log)
     httpd.registry = registry
     httpd.cfg = cfg
     httpd.printer = printer
     httpd.config_path = args.config
+    httpd.event_script_mgr = event_script_mgr
 
     tls_enabled = bool(tls_cfg.get("enabled"))
     if tls_enabled:

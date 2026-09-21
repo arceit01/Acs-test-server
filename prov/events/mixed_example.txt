@@ -1,0 +1,16 @@
+# Mixed Mode Example - Both GET and SET operations
+# Demonstrates auto-detection of operation types
+
+#MODE=auto
+
+# GET operations (no '=' sign)
+Device.DeviceInfo.SoftwareVersion
+Device.DeviceInfo.SerialNumber
+
+# SET operations (has '=' sign)
+Device.ManagementServer.PeriodicInformInterval=600:uint
+Device.Time.NTPServer1=time.nist.gov
+
+# More GET operations
+Device.IP.Interface.1.Status
+Device.IP.Interface.1.IPv4Address.1.IPAddress

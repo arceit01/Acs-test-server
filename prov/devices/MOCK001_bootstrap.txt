@@ -1,0 +1,13 @@
+# Device-Specific Bootstrap Script for MOCK001
+# This script is only executed when MOCK001 sends a BOOTSTRAP event
+# Device-specific scripts have highest priority
+
+#MODE=set
+
+# Custom settings for MOCK001
+Device.ManagementServer.PeriodicInformEnable=true:boolean
+Device.ManagementServer.PeriodicInformInterval=60:uint
+
+# Test device specific configuration
+Device.DeviceInfo.Description=MOCK001 Test Device - Auto-provisioned
+Device.Time.NTPServer1=pool.ntp.org

@@ -3,6 +3,44 @@
 All notable changes to the TR-069 ACS test tool are documented here.
 Bump `VERSION` in `version.py` and add an entry below for each release.
 
+## [1.7] - 2026-09-21
+
+### Added
+- **事件驅動自動化腳本執行系統**：根據 CPE Inform 事件自動執行腳本
+  - 可配置的事件到腳本映射（支援所有 TR-069 事件代碼）
+  - 多層級腳本回退機制：Serial → OUI → ProductClass → 預設腳本
+  - 支援 GET/SET 操作與自動偵測模式（`#MODE=get/set/auto`）
+  - 可配置執行時機：InformResponse 前/後執行（`timing: before_response/after_response`）
+  - 錯誤處理：log_continue（記錄繼續）/ use_fallback（使用備用腳本）/ abort_session（中斷）
+  - 腳本執行記錄到 Session history 與日誌
+- 新增 `EventScriptManager` 類別：統一管理事件腳本的查找、解析和執行
+- 配置文件新增 `event_scripts` 區段：
+  - `enabled`: 總開關（預設 false，向後相容）
+  - `timing`: 執行時機設定
+  - `mappings`: 預設事件腳本映射
+  - `device_overrides`: 設備特定腳本（按 Serial Number）
+  - `oui_overrides`: OUI 特定腳本（按製造商）
+  - `product_class_overrides`: ProductClass 特定腳本（按型號）
+  - `on_error`: 錯誤處理策略
+  - `log_execution`: 是否記錄腳本執行
+- 範例腳本目錄結構：
+  - `prov/events/`: 預設事件腳本（bootstrap.txt, boot.txt, periodic.txt, transfer_complete.txt, mixed_example.txt）
+  - `prov/devices/`: 設備特定腳本（例如 MOCK001_bootstrap.txt）
+  - `prov/oui/`: OUI 特定腳本
+  - `prov/products/`: ProductClass 特定腳本
+- 配置範例：`config_event_scripts_example.json`
+
+### Changed
+- `_handle_inform()` 方法整合事件腳本觸發邏輯
+- DEFAULT_CONFIG 新增 `event_scripts` 預設配置
+
+### Technical Details
+- 腳本格式與 `open` 指令完全相容
+- 支援 `#MODE=` 指令標記（get/set/auto）
+- 自動解析參數型別（支援 `:type` 後綴）
+- 線程安全：所有 RPC 排隊操作受 SessionRegistry 鎖保護
+- 錯誤隔離：腳本執行失敗不影響正常 CWMP session
+
 ## [1.6] - 2026-09-21
 
 ### Added

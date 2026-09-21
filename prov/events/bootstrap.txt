@@ -1,0 +1,16 @@
+# Bootstrap Event Script - Initial Provisioning
+# Triggered when CPE sends Event Code: 0 BOOTSTRAP
+# This script automatically configures essential management parameters
+
+#MODE=set
+
+# Enable periodic inform
+Device.ManagementServer.PeriodicInformEnable=true:boolean
+Device.ManagementServer.PeriodicInformInterval=300:uint
+
+# Configure NTP server
+Device.Time.NTPServer1=time.google.com
+Device.Time.Enable=true:boolean
+
+# Set device location (optional)
+Device.DeviceInfo.Description=Auto-provisioned by ACS

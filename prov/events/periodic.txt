@@ -1,0 +1,19 @@
+# Periodic Event Script - Regular Monitoring
+# Triggered when CPE sends Event Code: 2 PERIODIC
+# Collects monitoring metrics for health checks
+
+#MODE=get
+
+# Uptime and resource usage
+Device.DeviceInfo.UpTime
+Device.DeviceInfo.MemoryStatus.Total
+Device.DeviceInfo.MemoryStatus.Free
+
+# Network traffic statistics
+Device.IP.Interface.1.Stats.BytesSent
+Device.IP.Interface.1.Stats.BytesReceived
+Device.IP.Interface.1.Stats.PacketsSent
+Device.IP.Interface.1.Stats.PacketsReceived
+
+# Connection status
+Device.ManagementServer.ConnectionRequestURL
