@@ -1,0 +1,13 @@
+# Bootstrap Network Configuration (Stage 2)
+# Advanced network settings
+# Part of multi-script bootstrap sequence
+
+#MODE=set
+
+# DNS configuration
+Device.DNS.Client.Enable=true:boolean
+Device.DNS.Client.Server.1.DNSServer=8.8.8.8
+Device.DNS.Client.Server.2.DNSServer=8.8.4.4
+
+# IP interface
+Device.IP.Interface.1.Enable=true:boolean

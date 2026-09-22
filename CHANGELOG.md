@@ -3,6 +3,38 @@
 All notable changes to the TR-069 ACS test tool are documented here.
 Bump `VERSION` in `version.py` and add an entry below for each release.
 
+## [1.7.1] - 2026-09-21
+
+### Added
+- **多腳本順序執行**：支援在同一事件中順序執行多個腳本
+  - 新配置格式：`scripts: [...]` 陣列配置多個腳本
+  - 每個腳本可獨立設定 `mode`、`script`、`description` 欄位
+  - 一個腳本失敗不影響後續腳本執行（失敗繼續模式）
+  - 完整執行日誌：顯示「X succeeded, Y failed out of Z scripts」
+  - 受 `max_scripts_per_event` 限制（預設 3，可配置）
+  - 完全向後相容單一腳本配置
+- 範例腳本：
+  - `prov/events/bootstrap_base.txt` - 基礎管理配置（階段 1）
+  - `prov/events/bootstrap_network.txt` - 網路進階配置（階段 2）
+  - `prov/devices/TESTDEV001_check.txt` - 檢查目前設定（GET）
+  - `prov/devices/TESTDEV001_custom.txt` - 測試設備客製配置
+- 配置範例：`config_event_scripts_multi_example.json` - 完整多腳本配置示範
+- 測試套件：`test_multi_scripts.py` - 6 項測試（全部通過）
+
+### Changed
+- `max_scripts_per_event` 預設值從 1 改為 3
+- 執行日誌增強：顯示腳本編號和總數（例如：Executing script 2/3）
+- `_execute_for_event()` 方法支援兩種配置格式（單腳本/多腳本）
+
+### Technical Details
+- 支援三種典型場景：
+  1. 分階段佈建（stage1 → stage2 → stage3）
+  2. 先查詢再配置（GET → SET）
+  3. 通用 + 客製（common → device-specific）
+- 腳本執行失敗記錄 WARNING，不拋出異常
+- 日誌格式：`[SERIAL] Executing script N/M: path (description)`
+- 日誌摘要：`[SERIAL] Event X: N succeeded, M failed out of Z scripts`
+
 ## [1.7] - 2026-09-21
 
 ### Added

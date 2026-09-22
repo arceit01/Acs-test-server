@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
         "oui_overrides": {},
         "product_class_overrides": {},
         "on_error": "log_continue",
-        "max_scripts_per_event": 1,
+        "max_scripts_per_event": 3,
         "log_execution": True,
     },
     "logging": {"level": "INFO"},
@@ -102,7 +102,9 @@ class EventScriptManager:
                 self._execute_for_event(sess, event_code, event, max_scripts)
     
     def _execute_for_event(self, sess, event_code, event, max_scripts):
-        """Find and execute script for a specific event.
+        """Find and execute script(s) for a specific event.
+        
+        Supports both single script and multiple scripts configurations.
         
         Args:
             sess: CPESession instance
@@ -116,22 +118,80 @@ class EventScriptManager:
             self.logger.debug(f"[{sess.serial}] No script configured for event {event_code}")
             return
         
-        script_path = script_config.get("script")
-        mode = script_config.get("mode", "auto")
-        fallback_path = script_config.get("fallback")
+        # Check if this is a multi-script configuration
+        if "scripts" in script_config:
+            # New format: Multiple scripts in a list
+            scripts = script_config["scripts"]
+            
+            if not scripts:
+                self.logger.warning(f"[{sess.serial}] Event {event_code} has empty scripts list")
+                return
+            
+            # Apply max_scripts_per_event limit
+            if len(scripts) > max_scripts:
+                self.logger.warning(
+                    f"[{sess.serial}] Event {event_code} has {len(scripts)} scripts, "
+                    f"limiting to first {max_scripts}"
+                )
+                scripts = scripts[:max_scripts]
+            
+            # Execute all scripts in sequence
+            executed_count = 0
+            failed_count = 0
+            
+            for idx, script_cfg in enumerate(scripts, 1):
+                script_path = script_cfg.get("script")
+                mode = script_cfg.get("mode", "auto")
+                description = script_cfg.get("description", "")
+                
+                if not script_path:
+                    self.logger.warning(
+                        f"[{sess.serial}] Script {idx}/{len(scripts)} has no 'script' field, skipping"
+                    )
+                    continue
+                
+                desc_str = f" ({description})" if description else ""
+                self.logger.info(
+                    f"[{sess.serial}] Executing script {idx}/{len(scripts)}: "
+                    f"{script_path}{desc_str}"
+                )
+                
+                success = self._execute_script(sess, script_path, mode, event_code)
+                if success:
+                    executed_count += 1
+                else:
+                    failed_count += 1
+                # Continue to next script regardless of success/failure
+            
+            self.logger.info(
+                f"[{sess.serial}] Event {event_code}: {executed_count} succeeded, "
+                f"{failed_count} failed out of {len(scripts)} scripts"
+            )
         
-        # Execute main script
-        success = self._execute_script(sess, script_path, mode, event_code)
-        
-        # Error handling
-        if not success:
-            on_error = self.config.get("on_error", "log_continue")
-            if on_error == "use_fallback" and fallback_path:
-                self.logger.info(f"[{sess.serial}] Main script failed, trying fallback: {fallback_path}")
-                self._execute_script(sess, fallback_path, mode, event_code)
-            elif on_error == "abort_session":
-                raise Exception(f"Event script execution failed: {script_path}")
-            # Default: log_continue - already logged in _execute_script
+        else:
+            # Old format: Single script (backward compatible)
+            script_path = script_config.get("script")
+            mode = script_config.get("mode", "auto")
+            fallback_path = script_config.get("fallback")
+            
+            if not script_path:
+                self.logger.warning(f"[{sess.serial}] Script config has no 'script' field")
+                return
+            
+            # Execute main script
+            success = self._execute_script(sess, script_path, mode, event_code)
+            
+            # Error handling (maintain original behavior)
+            if not success:
+                on_error = self.config.get("on_error", "log_continue")
+                if on_error == "use_fallback" and fallback_path:
+                    self.logger.info(
+                        f"[{sess.serial}] Main script failed, trying fallback: {fallback_path}"
+                    )
+                    self._execute_script(sess, fallback_path, mode, event_code)
+                elif on_error == "abort_session":
+                    raise Exception(f"Event script execution failed: {script_path}")
+                # Default: log_continue - already logged in _execute_script
     
     def _find_script(self, sess, event_code):
         """Find script with priority: Serial -> OUI -> ProductClass -> Default.

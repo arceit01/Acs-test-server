@@ -1,0 +1,14 @@
+# TESTDEV001 Custom Configuration
+# Device-specific settings for test device
+# Part of multi-script device-specific sequence
+
+#MODE=set
+
+# Test device uses shorter inform interval for faster testing
+Device.ManagementServer.PeriodicInformInterval=60:uint
+
+# Custom description
+Device.DeviceInfo.Description=TESTDEV001 - Test Device with Custom Config
+
+# Custom NTP server for testing
+Device.Time.NTPServer1=pool.ntp.org

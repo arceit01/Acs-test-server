@@ -1,0 +1,102 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 7547,
+    "path": "/acs",
+    "tls": {
+      "enabled": false,
+      "cert_file": "certs/server.crt",
+      "key_file": "certs/server.key"
+    },
+    "auth": {
+      "enabled": false,
+      "username": "acsuser",
+      "password": "acspass"
+    }
+  },
+  "connection_request": {
+    "username": "",
+    "password": "",
+    "timeout": 10
+  },
+  "cwmp": {
+    "parameter_key": "acs-test-key",
+    "log_soap": false,
+    "auto_provision_cr": true
+  },
+  "event_scripts": {
+    "enabled": true,
+    "timing": "before_response",
+    "max_scripts_per_event": 3,
+    "mappings": {
+      "0": {
+        "scripts": [
+          {
+            "mode": "set",
+            "script": "prov/events/bootstrap_base.txt",
+            "description": "基礎管理配置"
+          },
+          {
+            "mode": "set",
+            "script": "prov/events/bootstrap_network.txt",
+            "description": "網路進階配置"
+          }
+        ]
+      },
+      "1": {
+        "mode": "get",
+        "script": "prov/events/boot.txt"
+      },
+      "2": {
+        "mode": "get",
+        "script": "prov/events/periodic.txt"
+      }
+    },
+    "device_overrides": {
+      "TESTDEV001": {
+        "0": {
+          "scripts": [
+            {
+              "mode": "set",
+              "script": "prov/events/bootstrap_base.txt",
+              "description": "通用基礎配置"
+            },
+            {
+              "mode": "get",
+              "script": "prov/devices/TESTDEV001_check.txt",
+              "description": "檢查目前設定"
+            },
+            {
+              "mode": "set",
+              "script": "prov/devices/TESTDEV001_custom.txt",
+              "description": "測試設備客製配置"
+            }
+          ]
+        }
+      },
+      "MOCK001": {
+        "0": {
+          "scripts": [
+            {
+              "mode": "set",
+              "script": "prov/events/bootstrap.txt",
+              "description": "通用配置"
+            },
+            {
+              "mode": "set",
+              "script": "prov/devices/MOCK001_bootstrap.txt",
+              "description": "MOCK001 客製配置"
+            }
+          ]
+        }
+      }
+    },
+    "oui_overrides": {},
+    "product_class_overrides": {},
+    "on_error": "log_continue",
+    "log_execution": true
+  },
+  "logging": {
+    "level": "INFO"
+  }
+}

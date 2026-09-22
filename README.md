@@ -1,4 +1,4 @@
-# TR-069 ACS 測試工具 v1.7
+# TR-069 ACS 測試工具 v1.7.1
 
 以 Python 標準函式庫實作的 TR-069/CWMP Auto Configuration Server（ACS）測試伺服器。
 可讓 CPE（client）連線，並透過互動式 console 對 CPE 下發 Get / Set 參數等 RPC 指令。
@@ -497,6 +497,112 @@ Device.IP.Interface.1.Status                   # GET
 5. mappings[event_code].fallback                   (備用腳本)
    └─ 僅當主腳本失敗且 on_error=use_fallback 時使用
 ```
+
+### 多腳本順序執行
+
+從 v1.7.1 開始，支援在同一事件中順序執行多個腳本，實現分階段配置或「通用 + 客製」的疊加模式。
+
+#### 配置格式
+
+**單腳本（向後相容）**：
+```json
+{
+  "event_scripts": {
+    "mappings": {
+      "0": {
+        "mode": "set",
+        "script": "prov/events/bootstrap.txt"
+      }
+    }
+  }
+}
+```
+
+**多腳本（新功能）**：
+```json
+{
+  "event_scripts": {
+    "max_scripts_per_event": 3,
+    "mappings": {
+      "0": {
+        "scripts": [
+          {
+            "mode": "set",
+            "script": "prov/events/bootstrap_base.txt",
+            "description": "基礎配置"
+          },
+          {
+            "mode": "set",
+            "script": "prov/events/bootstrap_network.txt",
+            "description": "網路配置"
+          }
+        ]
+      }
+    },
+    "device_overrides": {
+      "MOCK001": {
+        "0": {
+          "scripts": [
+            {
+              "mode": "set",
+              "script": "prov/events/bootstrap.txt",
+              "description": "通用配置"
+            },
+            {
+              "mode": "set",
+              "script": "prov/devices/MOCK001_custom.txt",
+              "description": "MOCK001 客製配置"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+#### 執行特性
+
+- ✅ **順序執行**：按配置順序依次執行每個腳本
+- ✅ **失敗繼續**：一個腳本失敗不影響後續腳本執行
+- ✅ **數量限制**：受 `max_scripts_per_event` 限制（預設 3）
+- ✅ **混合模式**：可混合 GET 和 SET 操作
+- ✅ **完整日誌**：記錄每個腳本的執行狀態（成功/失敗數量）
+
+#### 典型使用場景
+
+**場景 1：分階段佈建**
+```json
+{
+  "scripts": [
+    {"mode": "set", "script": "stage1_basic.txt", "description": "階段 1：基礎配置"},
+    {"mode": "set", "script": "stage2_network.txt", "description": "階段 2：網路配置"},
+    {"mode": "set", "script": "stage3_services.txt", "description": "階段 3：服務配置"}
+  ]
+}
+```
+
+**場景 2：先查詢再配置**
+```json
+{
+  "scripts": [
+    {"mode": "get", "script": "check_current.txt", "description": "檢查目前設定"},
+    {"mode": "set", "script": "apply_new.txt", "description": "套用新配置"}
+  ]
+}
+```
+
+**場景 3：通用 + 客製**
+```json
+{
+  "scripts": [
+    {"mode": "set", "script": "common_config.txt", "description": "通用配置"},
+    {"mode": "set", "script": "device_specific.txt", "description": "設備客製"}
+  ]
+}
+```
+
+完整配置範例請參考 `config_event_scripts_multi_example.json`。
 
 ### 使用範例
 

@@ -475,6 +475,290 @@ Device.DeviceInfo.Description=Test Device - Fast Polling
 
 ---
 
+## 多腳本順序執行
+
+從 v1.7.1 開始，支援在同一事件中順序執行多個腳本。
+
+### 功能特性
+
+- ✅ **順序執行**：按配置順序依次執行每個腳本
+- ✅ **失敗繼續**：一個腳本失敗不影響後續腳本執行
+- ✅ **數量限制**：受 `max_scripts_per_event` 限制（預設 3）
+- ✅ **混合模式**：可混合 GET 和 SET 操作
+- ✅ **獨立配置**：每個腳本可獨立設定 mode、script、description
+- ✅ **完整日誌**：記錄每個腳本的執行狀態
+
+### 配置格式
+
+#### 單腳本（向後相容）
+
+```json
+{
+  "event_scripts": {
+    "mappings": {
+      "0": {
+        "mode": "set",
+        "script": "prov/events/bootstrap.txt",
+        "fallback": "prov/events/minimal.txt"
+      }
+    }
+  }
+}
+```
+
+#### 多腳本（新格式）
+
+```json
+{
+  "event_scripts": {
+    "max_scripts_per_event": 3,
+    "mappings": {
+      "0": {
+        "scripts": [
+          {
+            "mode": "set",
+            "script": "prov/events/bootstrap_base.txt",
+            "description": "基礎配置"
+          },
+          {
+            "mode": "set",
+            "script": "prov/events/bootstrap_network.txt",
+            "description": "網路配置"
+          }
+        ]
+      }
+    },
+    "device_overrides": {
+      "TESTDEV001": {
+        "0": {
+          "scripts": [
+            {
+              "mode": "set",
+              "script": "prov/events/bootstrap.txt",
+              "description": "通用配置"
+            },
+            {
+              "mode": "get",
+              "script": "prov/devices/TESTDEV001_check.txt",
+              "description": "檢查目前設定"
+            },
+            {
+              "mode": "set",
+              "script": "prov/devices/TESTDEV001_custom.txt",
+              "description": "客製配置"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+### 執行流程
+
+```
+CPE 發送 Inform (Event 0 BOOTSTRAP)
+  ↓
+ACS 檢測到多腳本配置 (scripts: [...])
+  ↓
+應用 max_scripts_per_event 限制
+  ↓
+執行 Script 1: bootstrap_base.txt
+  - 記錄：[SERIAL] Executing script 1/3: bootstrap_base.txt (基礎配置)
+  - 解析腳本，排隊 RPC
+  - 記錄：[SERIAL] Executed event script: ... (mode=set, GET=0, SET=5)
+  ↓
+執行 Script 2: TESTDEV001_check.txt
+  - 記錄：[SERIAL] Executing script 2/3: TESTDEV001_check.txt (檢查目前設定)
+  - 解析腳本，排隊 RPC
+  - 記錄：[SERIAL] Executed event script: ... (mode=get, GET=6, SET=0)
+  ↓
+執行 Script 3: TESTDEV001_custom.txt
+  - 記錄：[SERIAL] Executing script 3/3: TESTDEV001_custom.txt (客製配置)
+  - 解析腳本，排隊 RPC
+  - 記錄：[SERIAL] Executed event script: ... (mode=set, GET=0, SET=3)
+  ↓
+最終摘要：[SERIAL] Event 0: 3 succeeded, 0 failed out of 3 scripts
+  ↓
+所有 RPC 在隊列中，等待發送
+```
+
+### 典型使用場景
+
+#### 場景 1：分階段佈建
+
+**需求**：BOOTSTRAP 時分三階段配置設備
+
+**配置**：
+```json
+{
+  "event_scripts": {
+    "mappings": {
+      "0": {
+        "scripts": [
+          {
+            "mode": "set",
+            "script": "prov/events/stage1_basic.txt",
+            "description": "階段 1：基礎配置"
+          },
+          {
+            "mode": "set",
+            "script": "prov/events/stage2_network.txt",
+            "description": "階段 2：網路配置"
+          },
+          {
+            "mode": "set",
+            "script": "prov/events/stage3_services.txt",
+            "description": "階段 3：服務配置"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+**結果**：
+- 設備依序接收三批配置
+- 即使某階段失敗，其他階段仍會執行
+- 日誌清楚顯示每階段的執行狀態
+
+#### 場景 2：先查詢再配置
+
+**需求**：配置前先查詢目前設定，用於驗證或決策
+
+**配置**：
+```json
+{
+  "event_scripts": {
+    "device_overrides": {
+      "TESTDEV001": {
+        "0": {
+          "scripts": [
+            {
+              "mode": "get",
+              "script": "prov/devices/TESTDEV001_check.txt",
+              "description": "查詢目前配置"
+            },
+            {
+              "mode": "set",
+              "script": "prov/devices/TESTDEV001_update.txt",
+              "description": "套用新配置"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+**結果**：
+- 先執行 GET 取得目前值
+- 再執行 SET 套用新配置
+- Console 可用 `hist` 查看查詢結果
+
+#### 場景 3：通用 + 客製
+
+**需求**：所有設備套用通用配置，特定設備追加客製配置
+
+**配置**：
+```json
+{
+  "event_scripts": {
+    "device_overrides": {
+      "MOCK001": {
+        "0": {
+          "scripts": [
+            {
+              "mode": "set",
+              "script": "prov/events/bootstrap.txt",
+              "description": "通用配置（所有設備適用）"
+            },
+            {
+              "mode": "set",
+              "script": "prov/devices/MOCK001_custom.txt",
+              "description": "MOCK001 客製配置"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+**結果**：
+- MOCK001 先套用通用配置
+- 再套用設備特定配置
+- 其他設備只執行通用配置（如果在 `mappings` 中定義）
+
+### 失敗處理
+
+#### 失敗繼續模式（預設）
+
+```
+Script 1: 成功 → 排隊 5 個 SET RPC
+  ↓
+Script 2: 失敗（檔案不存在）→ 記錄 WARNING
+  ↓
+Script 3: 成功 → 排隊 3 個 SET RPC
+  ↓
+最終：2 succeeded, 1 failed out of 3 scripts
+```
+
+**日誌範例**：
+```
+INFO: [MOCK001] Executing script 1/3: stage1.txt (階段 1)
+INFO: [MOCK001] Executed event script: stage1.txt (queued=5 RPC)
+INFO: [MOCK001] Executing script 2/3: stage2.txt (階段 2)
+WARNING: [MOCK001] Cannot open script 'stage2.txt': No such file or directory
+INFO: [MOCK001] Executing script 3/3: stage3.txt (階段 3)
+INFO: [MOCK001] Executed event script: stage3.txt (queued=3 RPC)
+INFO: [MOCK001] Event 0: 2 succeeded, 1 failed out of 3 scripts
+```
+
+#### 空腳本列表
+
+如果 `scripts: []` 為空陣列：
+```
+WARNING: [MOCK001] Event 0 has empty scripts list
+```
+
+#### 超過數量限制
+
+如果配置 5 個腳本但 `max_scripts_per_event: 3`：
+```
+WARNING: [MOCK001] Event 0 has 5 scripts, limiting to first 3
+INFO: [MOCK001] Executing script 1/3: ...
+INFO: [MOCK001] Executing script 2/3: ...
+INFO: [MOCK001] Executing script 3/3: ...
+# Script 4 和 5 不執行
+```
+
+### 配置選項
+
+| 選項 | 說明 | 預設值 | 備註 |
+|------|------|--------|------|
+| `max_scripts_per_event` | 每事件最大腳本數 | `3` | v1.7.1 從 1 改為 3 |
+| `description` | 腳本描述 | `""` | 顯示在日誌中，可選 |
+| `mode` | 腳本模式 | `"auto"` | 可在腳本中用 `#MODE=` 覆蓋 |
+
+### 最佳實踐
+
+1. **合理的數量**：建議每事件不超過 3 個腳本，避免 session 時間過長
+2. **清晰的描述**：使用 `description` 欄位說明每個腳本的用途
+3. **邏輯順序**：按依賴關係排列（如：先 GET 再 SET）
+4. **錯誤容忍**：考慮某些腳本可能失敗的情況
+5. **測試驗證**：使用 Mock CPE 測試完整流程
+
+### 完整範例
+
+參見 `config_event_scripts_multi_example.json` 完整配置示範。
+
+---
+
 ## 多層級回退機制
 
 ### 查找順序

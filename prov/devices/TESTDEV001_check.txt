@@ -1,0 +1,17 @@
+# TESTDEV001 Configuration Check
+# Query current device settings before applying custom config
+# Part of multi-script device-specific sequence
+
+#MODE=get
+
+# Check software version
+Device.DeviceInfo.SoftwareVersion
+Device.DeviceInfo.HardwareVersion
+
+# Check current management settings
+Device.ManagementServer.URL
+Device.ManagementServer.PeriodicInformInterval
+
+# Check network status
+Device.IP.Interface.1.Status
+Device.IP.Interface.1.IPv4Address.1.IPAddress
